@@ -32,9 +32,9 @@ To manage your loggers, add the custom card to your Lovelace dashboard:
 2. Click **Add Card**.
 3. Search for **Log Manager** or manually add the following YAML:
 
-\`\`\`yaml
+```yaml
 type: custom:log-manager-card
-\`\`\`
+```
 
 ![Log Manager UI showing saved loggers](screenshots/log_manager.png)
 ![Log Manager UI showing dropdown list](screenshots/log_manager2.png)
