@@ -1,0 +1,13 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Log Manager",
+        "description": "Do you want to initialize the Log Manager?"
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Only a single configuration is allowed."
+    }
+  }
+}

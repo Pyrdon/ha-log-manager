@@ -1,0 +1,12 @@
+{
+  "domain": "log_manager",
+  "name": "Log Manager",
+  "codeowners": ["@pyrdon"],
+  "version": "0.1.0",
+  "documentation": "https://github.com/pyrdon/ha-log-manager",
+  "issue_tracker": "https://github.com/your_username/log_manager/issues",
+  "dependencies": [],
+  "requirements": [],
+  "config_flow": true,
+  "iot_class": "local_push"
+}

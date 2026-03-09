@@ -1,0 +1,30 @@
+add_logger:
+  name: Add Logger
+  description: Add a new logger entity.
+  fields:
+    logger_name:
+      name: Logger Name
+      description: The Python logger namespace.
+      example: homeassistant.components.light
+      required: true
+      selector:
+        text:
+    friendly_name:
+      name: Friendly Name
+      description: A display name for the UI.
+      example: Light Component
+      required: false
+      selector:
+        text:
+
+remove_logger:
+  name: Remove Logger
+  description: Remove an existing logger entity.
+  fields:
+    logger_name:
+      name: Logger Name
+      description: The Python logger namespace to remove.
+      example: homeassistant.components.light
+      required: true
+      selector:
+        text:
