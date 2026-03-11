@@ -11,7 +11,7 @@
   "dependencies": [],
   "documentation": "https://github.com/pyrdon/ha-log-manager",
   "iot_class": "local_push",
-  "issue_tracker": "https://github.com/your_username/log_manager/issues",
+  "issue_tracker": "https://github.com/pyrdon/ha-log-manager/issues",
   "requirements": [],
   "version": "0.1.0"
 }
