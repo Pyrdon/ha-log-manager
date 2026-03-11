@@ -1,6 +1,7 @@
 import logging
 import os
 import voluptuous as vol
+import mimetypes
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -31,6 +32,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN]["loggers"] = stored_data.get("loggers", {})
 
     websocket_api.async_register_command(hass, ws_get_loggers)
+
+    # Force Python to recognize JavaScript files, running the disk I/O in a background
+    # thread to avoid blocking the Home Assistant event loop.
+    await hass.async_add_executor_job(mimetypes.init)
+    mimetypes.add_type("application/javascript", ".js")
 
     # Register the static path so the HTTP component can serve the JavaScript file.
     local_path = hass.config.path(f"custom_components/{DOMAIN}/www/{DOMAIN}")
