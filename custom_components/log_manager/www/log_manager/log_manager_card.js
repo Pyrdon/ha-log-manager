@@ -544,7 +544,7 @@ class LogManagerCard extends HTMLElement {
     });
 
     // Add new rows or update existing ones without destroying the DOM.
-    activeEntities.forEach((eid) => {
+    activeEntities.forEach((eid, index) => {
       const stateObj = this._hass.states[eid];
       let row = this._activeList.querySelector(`.log-row[data-entity-id="${eid}"]`);
 
@@ -652,9 +652,11 @@ class LogManagerCard extends HTMLElement {
         }
       }
 
-      // Always append the row to the active list container.
-      // This reorders the DOM elements to match our sorted array.
-      this._activeList.appendChild(row);
+      // Only move the row if it's not already in the correct position in order to prevent flickering
+      const expectedNode = this._activeList.children[index];
+      if (expectedNode !== row) {
+        this._activeList.insertBefore(row, expectedNode);
+      }
     });
 
     // Re-render the dropdown list so deleted items instantly reappear.
