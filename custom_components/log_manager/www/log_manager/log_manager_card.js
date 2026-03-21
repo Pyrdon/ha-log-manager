@@ -384,19 +384,6 @@ class LogManagerCard extends HTMLElement {
       const friendlyName = this._friendlyNameInput.value.trim() || loggerPath;
 
       if (this._editingPath) {
-        // Find the entity ID to forcefully purge it from the core registry.
-        const oldEidObj = Object.values(this._hass.states).find(s => {
-          return s.entity_id.startsWith("select.") &&
-                 s.attributes.logger_name === this._editingPath;
-        });
-
-        if (oldEidObj) {
-          this._hass.connection.sendMessagePromise({
-            type: "config/entity_registry/remove",
-            entity_id: oldEidObj.entity_id
-          }).catch(() => { });
-        }
-
         // Remove the old logger from the backend dictionary.
         this._hass.callService("log_manager", "remove_logger", {
           logger_name: this._editingPath
@@ -625,19 +612,18 @@ class LogManagerCard extends HTMLElement {
         row.querySelector(".remove-btn").addEventListener("click", () => {
           // Display a confirmation dialog before sending the delete request.
           if (confirm(`Are you sure you want to remove the logger '${displayName}'?`)) {
-
-            // Forcefully purge the entity from the core registry.
-            this._hass.connection.sendMessagePromise({
-              type: "config/entity_registry/remove",
-              entity_id: eid
-            }).catch(() => { });
-
             // Only attempt the python service call if the integration still recognizes it.
             if (!isUnavailable) {
               this._hass.callService("log_manager", "remove_logger", {
                 logger_name: actualLoggerName,
                 friendly_name: displayName
               });
+            } else {
+              // Forcefully purge the entity from the core registry.
+              this._hass.connection.sendMessagePromise({
+                type: "config/entity_registry/remove",
+                entity_id: eid
+              }).catch(() => { });
             }
           }
         });
