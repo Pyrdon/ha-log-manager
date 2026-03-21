@@ -2,7 +2,6 @@
 
 import logging
 from homeassistant.components.select import SelectEntity
-from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from . import DOMAIN
@@ -20,7 +19,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         Callback to add a new select entity for a specific logger path.
         """
 
-        async_add_entities([LogLevelSelect(logger_name, friendly_name)])
+        async_add_entities([LogLevelSelect(hass, logger_name, friendly_name)])
 
     async_dispatcher_connect(hass, f"{DOMAIN}_add_logger", async_add_logger)
 
@@ -29,30 +28,32 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
     if stored_loggers:
         # Unpack the dictionary to restore the entities.
-        entities = [
-            LogLevelSelect(name, fname)
-            for name, fname in stored_loggers.items()
-        ]
+        entities = []
+        for name, info in stored_loggers.items():
+            fname = info.get("friendly_name")
+            entities.append(LogLevelSelect(hass, name, fname))
+
         async_add_entities(entities)
 
-class LogLevelSelect(SelectEntity, RestoreEntity):
+class LogLevelSelect(SelectEntity):
     """
     Select entity to control the level of a specific Python logger.
     """
 
-    def __init__(self, logger_name: str, friendly_name: str):
+    def __init__(self, hass, logger_name: str, friendly_name: str):
         """
         Initialize the select entity.
         """
 
+        self.hass = hass
         self._logger_name = logger_name
         self._attr_name = friendly_name
         self._attr_icon = "mdi:math-log"
         self._attr_options = LOG_LEVELS
 
-        # Default to the current effective level of the Python logger.
-        current_level = logging.getLogger(logger_name).getEffectiveLevel()
-        self._attr_current_option = logging.getLevelName(current_level)
+        # Default to the stored level from the domain configuration.
+        stored_info = hass.data[DOMAIN]["loggers"].get(logger_name, {})
+        self._attr_current_option = stored_info.get("level", "INFO")
 
         # Unique IDs must be strictly lowercase in Home Assistant.
         safe_id = logger_name.replace('.', '_').lower()
@@ -66,7 +67,7 @@ class LogLevelSelect(SelectEntity, RestoreEntity):
 
     async def async_added_to_hass(self):
         """
-        Restore the previous state and apply the log level on startup.
+        Listen for remove signals when added to Home Assistant.
         """
 
         await super().async_added_to_hass()
@@ -80,13 +81,6 @@ class LogLevelSelect(SelectEntity, RestoreEntity):
             )
         )
 
-        # Attempt to restore the previous state from Home Assistant storage.
-        last_state = await self.async_get_last_state()
-
-        if last_state and last_state.state in LOG_LEVELS:
-            self._attr_current_option = last_state.state
-            logging.getLogger(self._logger_name).setLevel(last_state.state)
-
     async def _handle_remove_signal(self, logger_name: str):
         """
         Remove the entity from Home Assistant if the name matches.
@@ -98,7 +92,7 @@ class LogLevelSelect(SelectEntity, RestoreEntity):
                 self._attr_name,
                 logger_name
             )
-            await self.async_remove(force_remove=True)
+            await self.async_remove(force_remove = True)
 
     @property
     def current_option(self) -> str:
@@ -132,3 +126,11 @@ class LogLevelSelect(SelectEntity, RestoreEntity):
             option
         )
         logging.getLogger(self._logger_name).setLevel(option)
+
+        # Update storage with the new log level and execute a save.
+        stored_info = self.hass.data[DOMAIN]["loggers"].get(self._logger_name, {})
+        stored_info["level"] = option
+        self.hass.data[DOMAIN]["loggers"][self._logger_name] = stored_info
+
+        if "save_data" in self.hass.data[DOMAIN]:
+            await self.hass.data[DOMAIN]["save_data"]()

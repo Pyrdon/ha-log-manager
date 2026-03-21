@@ -13,9 +13,41 @@ from homeassistant.helpers.storage import Store
 
 DOMAIN = "log_manager"
 STORAGE_KEY = f"{DOMAIN}.config"
-STORAGE_VERSION = 1
+STORAGE_VERSION = 2
 
 _LOGGER = logging.getLogger(__name__)
+
+class LogManagerStore(Store):
+    """
+    Custom storage handling to manage migrations between configuration versions.
+    """
+
+    async def _async_migrate_func(
+        self, old_major_version: int, old_minor_version: int, old_data: dict
+    ) -> dict:
+        """
+        Migrate old configuration to the new dictionary-based format.
+        """
+
+        _LOGGER.info("Migrating storage to version %s.", STORAGE_VERSION)
+
+        if old_major_version == 1:
+            new_loggers = {}
+
+            for name, friendly_name in old_data.get("loggers", {}).items():
+                # We cannot read RestoreEntity DB here, so we grab current effective level.
+                current_level = logging.getLogger(name).getEffectiveLevel()
+                level_name = logging.getLevelName(current_level)
+                new_loggers[name] = {
+                    "friendly_name": friendly_name,
+                    "level": level_name
+                }
+                _LOGGER.debug("Migrated logger '%s'.", friendly_name)
+
+            old_data["loggers"] = new_loggers
+            _LOGGER.info("Migrated %s loggers.", len(new_loggers))
+
+        return old_data
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """
@@ -24,14 +56,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})
 
-    # Initialize the storage object once and bind it to the domain data.
-    store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+    # Register the websocket command as early as possible to avoid frontend errors.
+    websocket_api.async_register_command(hass, ws_get_loggers)
+
+    # Initialize the custom storage object once and bind it to the domain data.
+    store = LogManagerStore(hass, STORAGE_VERSION, STORAGE_KEY)
     hass.data[DOMAIN]["store"] = store
 
     stored_data = await store.async_load() or {"loggers": {}}
-    hass.data[DOMAIN]["loggers"] = stored_data.get("loggers", {})
+    stored_loggers = stored_data.get("loggers", {})
+    cleaned_loggers = {}
 
-    websocket_api.async_register_command(hass, ws_get_loggers)
+    # Apply log levels early.
+    # We cannot check if loggers exist yet as other components might not be loaded.
+    for logger_name, info in stored_loggers.items():
+        cleaned_loggers[logger_name] = info
+        level = info.get("level", "NOTSET")
+        if level != "NOTSET":
+            _LOGGER.info("Restoring log level of '%s' to %s.", logger_name, level)
+            logging.getLogger(logger_name).setLevel(level)
+
+    hass.data[DOMAIN]["loggers"] = cleaned_loggers
 
     # Force Python to recognize JavaScript files, running the disk I/O in a background
     # thread to avoid blocking the Home Assistant event loop.
@@ -56,6 +101,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await hass.data[DOMAIN]["store"].async_save(
             {"loggers": hass.data[DOMAIN]["loggers"]}
         )
+
+    # Expose the save function so select.py can trigger it.
+    hass.data[DOMAIN]["save_data"] = save_data
 
     async def add_logger(call):
         """
@@ -83,7 +131,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return
 
         # Register the new configuration in memory and storage.
-        stored_loggers[logger_name] = friendly_name
+        stored_loggers[logger_name] = {
+            "friendly_name": friendly_name,
+            "level": "NOTSET"
+        }
         hass.data[DOMAIN]["loggers"] = stored_loggers
 
         await save_data()
