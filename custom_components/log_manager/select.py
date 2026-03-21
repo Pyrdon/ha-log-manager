@@ -51,9 +51,6 @@ class LogLevelSelect(SelectEntity, RestoreEntity):
         self._attr_unique_id = f"log_manager_{logger_name.replace('.', '_')}"
         self._attr_options = LOG_LEVELS
 
-        # Force the entity ID to match what the JavaScript card expects.
-        self.entity_id = f"select.log_manager_{logger_name.replace('.', '_')}"
-
         # Default to the current effective level of the Python logger.
         current_level = logging.getLogger(logger_name).getEffectiveLevel()
         self._attr_current_option = logging.getLevelName(current_level)

@@ -386,7 +386,7 @@ class LogManagerCard extends HTMLElement {
       if (this._editingPath) {
         // Find the entity ID to forcefully purge it from the core registry.
         const oldEidObj = Object.values(this._hass.states).find(s => {
-          return s.entity_id.startsWith("select.log_manager_") &&
+          return s.entity_id.startsWith("select.") &&
                  s.attributes.logger_name === this._editingPath;
         });
 
@@ -439,7 +439,7 @@ class LogManagerCard extends HTMLElement {
 
     // Find all currently managed paths to exclude them from the list.
     const activePaths = Object.values(this._hass.states)
-      .filter(s => s.entity_id.startsWith("select.log_manager_"))
+      .filter(s => s.entity_id.startsWith("select.") && s.attributes.logger_name)
       .map(s => s.attributes.logger_name);
 
     this._availableLoggers.forEach(opt => {
@@ -492,7 +492,7 @@ class LogManagerCard extends HTMLElement {
   // Update the list of active loggers currently managed by the integration.
   _updateActiveList() {
     const rawActiveEntities = Object.keys(this._hass.states).filter(eid => {
-      return eid.startsWith("select.log_manager_");
+      return eid.startsWith("select.") && this._hass.states[eid].attributes.logger_name;
     });
 
     if (rawActiveEntities.length === 0) {
@@ -673,7 +673,8 @@ class LogManagerCard extends HTMLElement {
 
     // Check all currently active entities, explicitly excluding the one being edited.
     const activeStates = Object.values(this._hass.states).filter(s => {
-      return s.entity_id.startsWith("select.log_manager_") &&
+      return s.entity_id.startsWith("select.") &&
+             s.attributes.logger_name &&
              s.attributes.logger_name !== this._editingPath;
     });
 
