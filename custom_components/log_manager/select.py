@@ -48,12 +48,15 @@ class LogLevelSelect(SelectEntity, RestoreEntity):
         self._logger_name = logger_name
         self._attr_name = friendly_name
         self._attr_icon = "mdi:math-log"
-        self._attr_unique_id = f"log_manager_{logger_name.replace('.', '_')}"
         self._attr_options = LOG_LEVELS
 
         # Default to the current effective level of the Python logger.
         current_level = logging.getLogger(logger_name).getEffectiveLevel()
         self._attr_current_option = logging.getLevelName(current_level)
+
+        # Unique IDs must be strictly lowercase in Home Assistant.
+        safe_id = logger_name.replace('.', '_').lower()
+        self._attr_unique_id = f"log_manager_{safe_id}"
 
         _LOGGER.debug(
             "Adding new logger configuration for '%s' (%s).",
