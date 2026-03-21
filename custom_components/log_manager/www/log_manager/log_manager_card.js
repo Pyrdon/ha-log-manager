@@ -639,7 +639,7 @@ class LogManagerCard extends HTMLElement {
       }
 
       // Only move the row if it's not already in the correct position in order to prevent flickering
-      const expectedNode = this._activeList.children[index];
+      const expectedNode = this._activeList.children[index] || null;
       if (expectedNode !== row) {
         this._activeList.insertBefore(row, expectedNode);
       }
