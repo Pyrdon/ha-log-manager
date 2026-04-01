@@ -28,3 +28,15 @@ remove_logger:
       required: true
       selector:
         text:
+
+reset_counters:
+  name: Reset Counters
+  description: Reset warning and error counters for managed loggers.
+  fields:
+    logger_name:
+      name: Logger Name
+      description: The Python logger namespace to reset counters for. If omitted, all counters are reset.
+      example: homeassistant.components.light
+      required: false
+      selector:
+        text:

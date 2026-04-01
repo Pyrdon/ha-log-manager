@@ -17,6 +17,71 @@ STORAGE_VERSION = 2
 
 _LOGGER = logging.getLogger(__name__)
 
+
+class LogCounterHandler(logging.Handler):
+    """Count warnings and errors for managed loggers."""
+
+    MAX_RECENT = 10
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        super().__init__(logging.WARNING)
+        self.hass = hass
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            loggers = self.hass.data.get(DOMAIN, {}).get("loggers", {})
+            if not loggers:
+                return
+
+            # Match the record against managed loggers, including child loggers.
+            # e.g. "custom_components.voice_satellite.sensor" matches
+            # the managed logger "custom_components.voice_satellite".
+            matched_name = None
+            if record.name in loggers:
+                matched_name = record.name
+            else:
+                for name in loggers:
+                    if record.name.startswith(name + "."):
+                        matched_name = name
+                        break
+
+            if matched_name is None:
+                return
+
+            counters = self.hass.data[DOMAIN]["counters"]
+            if matched_name not in counters:
+                counters[matched_name] = {
+                    "warning": 0, "error": 0,
+                    "last_warning": "", "last_error": "",
+                    "recent_logs": []
+                }
+
+            msg = record.getMessage()
+            level_name = record.levelname
+            source = f"{record.pathname}:{record.lineno}" if record.pathname else ""
+
+            entry = {
+                "timestamp": record.created,
+                "level": level_name,
+                "message": msg,
+                "source": source
+            }
+
+            recent = counters[matched_name]["recent_logs"]
+            recent.insert(0, entry)
+            if len(recent) > self.MAX_RECENT:
+                del recent[self.MAX_RECENT:]
+
+            if record.levelno >= logging.ERROR:
+                counters[matched_name]["error"] += 1
+                counters[matched_name]["last_error"] = msg
+            else:
+                counters[matched_name]["warning"] += 1
+                counters[matched_name]["last_warning"] = msg
+        except Exception:
+            self.handleError(record)
+
+
 class LogManagerStore(Store):
     """
     Custom storage handling to manage migrations between configuration versions.
@@ -58,6 +123,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Register the websocket command as early as possible to avoid frontend errors.
     websocket_api.async_register_command(hass, ws_get_loggers)
+    websocket_api.async_register_command(hass, ws_get_stats)
 
     # Initialize the custom storage object once and bind it to the domain data.
     store = LogManagerStore(hass, STORAGE_VERSION, STORAGE_KEY)
@@ -77,6 +143,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             logging.getLogger(logger_name).setLevel(level)
 
     hass.data[DOMAIN]["loggers"] = cleaned_loggers
+
+    # Initialize warning/error counters for each stored logger.
+    hass.data[DOMAIN]["counters"] = {
+        name: {"warning": 0, "error": 0, "last_warning": "", "last_error": "", "recent_logs": []} for name in cleaned_loggers
+    }
+
+    # Register the counter handler to track warnings and errors for managed loggers.
+    counter_handler = LogCounterHandler(hass)
+    logging.root.addHandler(counter_handler)
+    hass.data[DOMAIN]["counter_handler"] = counter_handler
 
     # Force Python to recognize JavaScript files, running the disk I/O in a background
     # thread to avoid blocking the Home Assistant event loop.
@@ -137,6 +213,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         }
         hass.data[DOMAIN]["loggers"] = stored_loggers
 
+        # Initialize counters for the new logger.
+        hass.data[DOMAIN]["counters"][logger_name] = {"warning": 0, "error": 0, "last_warning": "", "last_error": "", "recent_logs": []}
+
         await save_data()
 
         # Dispatch signal to select.py to create the new entity.
@@ -157,6 +236,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         if logger_name in hass.data[DOMAIN]["loggers"]:
             del hass.data[DOMAIN]["loggers"][logger_name]
+            hass.data[DOMAIN]["counters"].pop(logger_name, None)
             await save_data()
             async_dispatcher_send(hass, f"{DOMAIN}_remove_logger", logger_name)
 
@@ -180,6 +260,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         })
     )
 
+    async def reset_counters(call):
+        """
+        Reset warning and error counters for one or all managed loggers.
+        """
+
+        logger_name = call.data.get("logger_name")
+        counters = hass.data[DOMAIN]["counters"]
+
+        if logger_name:
+            if logger_name in counters:
+                counters[logger_name] = {"warning": 0, "error": 0, "last_warning": "", "last_error": "", "recent_logs": []}
+                _LOGGER.info("Reset counters for '%s'.", logger_name)
+        else:
+            for name in counters:
+                counters[name] = {"warning": 0, "error": 0, "last_warning": "", "last_error": "", "recent_logs": []}
+            _LOGGER.info("Reset counters for all loggers.")
+
+    hass.services.async_register(
+        DOMAIN,
+        "reset_counters",
+        reset_counters,
+        schema=vol.Schema({
+            vol.Optional("logger_name"): cv.string,
+        })
+    )
+
     # Forward the setup to the select platform so it can create the entities.
     await hass.config_entries.async_forward_entry_setups(entry, ["select"])
 
@@ -193,7 +299,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, ["select"])
 
     if unload_ok:
+        # Remove the counter handler from the root logger.
+        handler = hass.data[DOMAIN].pop("counter_handler", None)
+        if handler:
+            logging.root.removeHandler(handler)
+
         hass.data[DOMAIN].pop("loggers", None)
+        hass.data[DOMAIN].pop("counters", None)
 
     return unload_ok
 
@@ -210,6 +322,18 @@ async def ws_get_loggers(hass: HomeAssistant, connection, msg: dict):
     _LOGGER.info("Returning list of %s loggers.", len(loggers))
 
     connection.send_result(msg["id"], loggers)
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/get_stats"})
+@websocket_api.async_response
+async def ws_get_stats(hass: HomeAssistant, connection, msg: dict):
+    """
+    WebSocket command to retrieve warning and error counters for managed loggers.
+    """
+
+    counters = hass.data.get(DOMAIN, {}).get("counters", {})
+    _LOGGER.debug("Returning stats for %s loggers.", len(counters))
+
+    connection.send_result(msg["id"], counters)
 
 async def async_register_lovelace_resource(hass: HomeAssistant) -> None:
     """
