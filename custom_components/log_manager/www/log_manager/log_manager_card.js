@@ -14,6 +14,15 @@ class LogManagerCard extends HTMLElement {
     this._prevRowStates = {};
     this._prevPanelHtml = {};
 
+    this._recordingState = null; // null | "recording" | "completed" | "results"
+    this._recordingStartTime = 0;
+    this._recordingLoggers = [];
+    this._recordingLevelOverrides = {};
+    this._recordingBuffer = [];
+    this._recordingDuration = 0;
+    this._recordingLogCount = 0;
+    this._recordingTimerInterval = null;
+
     this._savedPath = sessionStorage.getItem("logManagerPath") || "";
     this._savedName = sessionStorage.getItem("logManagerName") || "";
   }
@@ -103,10 +112,16 @@ class LogManagerCard extends HTMLElement {
       <div class="log-panel">
         <div class="log-entries">${entriesHtml}</div>
         <div class="log-disclaimer">Only WARNING and above are captured, regardless of configured level.</div>
-        <button class="reset-btn" data-logger="${this._escapeAttr(loggerName)}"${hasCounters ? "" : " disabled"}>
-          <ha-icon icon="mdi:refresh" style="--mdi-icon-size: 14px;"></ha-icon>
-          Reset counters
-        </button>
+        <div style="display: flex; gap: 8px; margin-top: 8px;">
+          <button class="reset-btn" data-logger="${this._escapeAttr(loggerName)}"${hasCounters ? "" : " disabled"}>
+            <ha-icon icon="mdi:refresh" style="--mdi-icon-size: 14px;"></ha-icon>
+            Reset counters
+          </button>
+          <button class="copy-panel-btn" data-logger="${this._escapeAttr(loggerName)}">
+            <ha-icon icon="mdi:content-copy" style="--mdi-icon-size: 14px;"></ha-icon>
+            Copy
+          </button>
+        </div>
       </div>`;
   }
 
@@ -204,6 +219,37 @@ class LogManagerCard extends HTMLElement {
     });
   }
 
+  _attachCopyPanelHandler(row) {
+    const btn = row.querySelector(".copy-panel-btn");
+    if (!btn) return;
+    // Remove stale listeners to prevent duplicate handler accumulation.
+    const clone = btn.cloneNode(true);
+    btn.replaceWith(clone);
+    clone.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const loggerName = clone.dataset.logger;
+      if (!loggerName) return;
+      const stats = this._counters[loggerName];
+      if (!stats) return;
+      const logs = stats.recent_logs || [];
+      if (logs.length === 0) return;
+      const text = logs.map(entry => {
+        const time = new Date(entry.timestamp * 1000).toLocaleString(undefined, {
+          year: "numeric", month: "2-digit", day: "2-digit",
+          hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
+        });
+        const level = entry.level.padEnd(8);
+        const src = entry.source ? ` (${entry.source})` : "";
+        return `[${time}] ${level} ${entry.logger}  ${entry.message}${src}`;
+      }).join("\n") + "\n";
+      navigator.clipboard.writeText(text).then(() => {
+        const original = clone.textContent;
+        clone.textContent = "Copied!";
+        setTimeout(() => { clone.textContent = original; }, 2000);
+      }).catch(err => console.error("Failed to copy:", err));
+    });
+  }
+
   // Update badge elements in-place without destroying the DOM, so title tooltips survive.
   _updateBadgesInPlace(row, loggerName) {
     const stats = this._counters[loggerName];
@@ -277,13 +323,17 @@ class LogManagerCard extends HTMLElement {
       this._buildUI();
       this._fetchLoggers();
       this._uiBuilt = true;
+      this._checkExistingRecording();
     }
 
     // Debounce via rAF so we never do redundant DOM work within a single frame.
     if (!this._updateScheduled) {
       this._updateScheduled = true;
       requestAnimationFrame(() => {
-        try { this._updateActiveList(); }
+        try {
+          this._updateActiveList();
+          this._updateRecordingUI();
+        }
         finally { this._updateScheduled = false; }
       });
     }
@@ -389,6 +439,8 @@ class LogManagerCard extends HTMLElement {
           gap: 4px;
           max-height: 200px;
           overflow-y: auto;
+          user-select: text;
+          -webkit-user-select: text;
         }
 
         .log-entry {
@@ -488,6 +540,26 @@ class LogManagerCard extends HTMLElement {
         .reset-btn:disabled:hover {
           color: var(--secondary-text-color);
           border-color: var(--divider-color);
+        }
+
+        .copy-panel-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          margin-top: 8px;
+          padding: 4px 10px;
+          font-size: 12px;
+          background: none;
+          color: var(--secondary-text-color);
+          border: 1px solid var(--divider-color);
+          border-radius: 4px;
+          cursor: pointer;
+          transition: color 0.2s, border-color 0.2s;
+        }
+
+        .copy-panel-btn:hover {
+          color: var(--primary-text-color);
+          border-color: var(--primary-text-color);
         }
 
 select.level-select {
@@ -698,6 +770,272 @@ select.level-select {
         .btn-danger:hover {
           filter: brightness(1.1);
         }
+
+        /* Recording UI styles */
+        .recording-active {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          color: var(--error-color);
+          font-weight: 500;
+        }
+
+        .recording-dot {
+          width: 10px;
+          height: 10px;
+          border-radius: 50%;
+          background: var(--error-color);
+          animation: recording-pulse 1.5s ease-in-out infinite;
+        }
+
+        @keyframes recording-pulse {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.4; transform: scale(0.7); }
+        }
+
+        .recording-timer {
+          font-family: monospace;
+          font-size: 14px;
+        }
+
+        .recording-tag {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 18px;
+          height: 18px;
+          border-radius: 50%;
+          background: var(--error-color);
+          color: white;
+          font-size: 10px;
+          font-weight: 700;
+          margin-right: 4px;
+          animation: recording-pulse 1.5s ease-in-out infinite;
+          flex-shrink: 0;
+          vertical-align: middle;
+        }
+
+        .btn-record {
+          color: var(--error-color) !important;
+        }
+
+        .btn-record:hover {
+          background: rgba(244, 67, 54, 0.08) !important;
+        }
+
+        .dialog-overlay {
+          display: none;
+          position: fixed;
+          top: 0; left: 0; right: 0; bottom: 0;
+          background: rgba(0, 0, 0, 0.5);
+          z-index: 10000;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .dialog-overlay.visible {
+          display: flex;
+        }
+
+        .dialog-box {
+          background: var(--card-background-color);
+          border-radius: 12px;
+          padding: 24px;
+          max-width: 400px;
+          width: 90%;
+          box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+
+        .dialog-box-wide {
+          max-width: 900px;
+          max-height: 85vh;
+          overflow-y: auto;
+        }
+
+        .dialog-title {
+          font-size: 16px;
+          font-weight: 500;
+          margin-bottom: 8px;
+        }
+
+        .dialog-actions {
+          display: flex;
+          justify-content: flex-end;
+          gap: 8px;
+          margin-top: 16px;
+        }
+
+        .dialog-actions button {
+          padding: 8px 16px;
+          border-radius: 8px;
+          font-size: 14px;
+          font-weight: 500;
+          cursor: pointer;
+        }
+
+        .btn-primary {
+          background: var(--primary-color);
+          color: white;
+          border: none;
+        }
+
+        .btn-primary:hover {
+          filter: brightness(1.1);
+        }
+
+        .btn-primary:disabled {
+          background: var(--disabled-text-color);
+          cursor: not-allowed;
+          filter: none;
+        }
+
+        .btn-secondary {
+          background: none;
+          color: var(--primary-text-color);
+          border: 1px solid var(--divider-color);
+        }
+
+        .btn-secondary:hover {
+          background: rgba(var(--rgb-primary-text-color), 0.05);
+        }
+
+        .btn-secondary:disabled,
+        .btn-secondary:disabled:hover {
+          opacity: 0.5;
+          cursor: not-allowed;
+          background: none;
+          color: var(--primary-text-color);
+          border: 1px solid var(--divider-color);
+        }
+
+        .logger-checklist {
+          max-height: 260px;
+          overflow-y: auto;
+          margin: 12px 0;
+          border: 1px solid var(--divider-color);
+          border-radius: 6px;
+          padding: 4px;
+        }
+
+        .checklist-item {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 6px 8px;
+          font-size: 13px;
+          border-radius: 4px;
+          cursor: pointer;
+        }
+
+        .checklist-item:hover {
+          background: rgba(var(--rgb-primary-text-color), 0.05);
+        }
+
+        .checklist-item input[type="checkbox"] {
+          margin: 0;
+          cursor: pointer;
+        }
+
+        .checklist-item .logger-label {
+          flex: 1;
+          word-break: break-all;
+          line-height: 1.3;
+        }
+
+        .checklist-item .logger-level {
+          font-size: 11px;
+          opacity: 0.7;
+          flex-shrink: 0;
+        }
+
+        .recording-level-select {
+          font-size: 11px;
+          padding: 2px 4px;
+          border-radius: 3px;
+          border: 1px solid var(--divider-color);
+          background: var(--card-background-color);
+          color: var(--primary-text-color);
+          cursor: pointer;
+          flex-shrink: 0;
+          max-width: 90px;
+        }
+
+        .recording-level-select:disabled {
+          opacity: 0.4;
+          cursor: not-allowed;
+        }
+
+        .select-all-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 6px 8px;
+          font-size: 13px;
+          font-weight: 500;
+          border-bottom: 1px solid var(--divider-color);
+          margin-bottom: 4px;
+        }
+
+        .select-all-row input[type="checkbox"] {
+          margin: 0;
+          cursor: pointer;
+        }
+
+        .recording-summary {
+          font-size: 14px;
+          color: var(--secondary-text-color);
+          margin-bottom: 12px;
+        }
+
+        .log-preview {
+          max-height: 420px;
+          overflow-y: auto;
+          background: rgba(0, 0, 0, 0.06);
+          border-radius: 6px;
+          padding: 4px 0;
+          font-family: monospace;
+          font-size: 12px;
+          line-height: 1.5;
+          user-select: text;
+          -webkit-user-select: text;
+        }
+
+        .log-preview-line {
+          display: flex;
+          gap: 8px;
+          padding: 2px 10px;
+        }
+
+        .log-preview-line:hover {
+          filter: brightness(1.2);
+        }
+
+        .log-preview-col {
+          flex-shrink: 0;
+          user-select: text;
+        }
+
+        .log-preview-col.level-col {
+          width: 64px;
+          font-weight: 600;
+        }
+
+        .log-preview-col.time-col {
+          width: 80px;
+        }
+
+        .log-preview-col.logger-col {
+          width: 180px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .log-preview-col.msg-col {
+          flex: 1;
+          min-width: 0;
+          white-space: pre-wrap;
+          word-break: break-all;
+        }
       </style>
       <ha-card>
         <div class="header">
@@ -729,6 +1067,11 @@ select.level-select {
             <span id="toggle-text">Add Logger</span>
           </button>
 
+          <button class="toggle-add-btn" id="record-btn" title="Record log events for export">
+            <ha-icon icon="mdi:record-circle" id="record-icon"></ha-icon>
+            <span id="record-text">Record</span>
+          </button>
+
           <button class="toggle-add-btn" onclick="window.location.href='/config/logs'" title="Open Home Assistant core log viewer">
             <ha-icon icon="mdi:text-box-search-outline"></ha-icon>
             View Core Logs
@@ -746,6 +1089,31 @@ select.level-select {
           </div>
         </div>
       </div>
+
+      <div class="dialog-overlay" id="recording-setup-dialog">
+        <div class="dialog-box">
+          <div class="dialog-title">Select Loggers to Record</div>
+          <div id="logger-checklist" class="logger-checklist"></div>
+          <div class="dialog-actions">
+            <button class="btn-secondary" id="recording-setup-cancel">Cancel</button>
+            <button class="btn-primary" id="recording-setup-start" disabled>Start Recording</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="dialog-overlay" id="recording-results-dialog">
+        <div class="dialog-box dialog-box-wide">
+          <div class="dialog-title">Recording Complete</div>
+          <div id="recording-summary" class="recording-summary"></div>
+          <div id="log-preview" class="log-preview"></div>
+          <div class="dialog-actions">
+            <button class="btn-secondary" id="save-plain-btn">Save as .log</button>
+            <button class="btn-secondary" id="save-jsonl-btn">Save as .jsonl</button>
+            <button class="btn-secondary" id="copy-recording-btn" style="margin-right: auto;">Copy to clipboard</button>
+            <button class="btn-secondary" id="recording-results-close">Close</button>
+          </div>
+        </div>
+      </div>
     `;
 
     this._activeList = this.shadowRoot.getElementById("active-list");
@@ -758,14 +1126,32 @@ select.level-select {
     this._toggleText = this.shadowRoot.getElementById("toggle-text");
     this._addSectionWrapper = this.shadowRoot.getElementById("add-section-wrapper");
     this._deleteDialog = this.shadowRoot.getElementById("delete-dialog");
+    this._recordBtn = this.shadowRoot.getElementById("record-btn");
+    this._recordIcon = this.shadowRoot.getElementById("record-icon");
+    this._recordText = this.shadowRoot.getElementById("record-text");
+    this._recordingSetupDialog = this.shadowRoot.getElementById("recording-setup-dialog");
+    this._loggerChecklist = this.shadowRoot.getElementById("logger-checklist");
+    this._recordingSetupStart = this.shadowRoot.getElementById("recording-setup-start");
+    this._recordingSetupCancel = this.shadowRoot.getElementById("recording-setup-cancel");
+    this._recordingResultsDialog = this.shadowRoot.getElementById("recording-results-dialog");
+    this._recordingSummary = this.shadowRoot.getElementById("recording-summary");
+    this._logPreview = this.shadowRoot.getElementById("log-preview");
+    this._savePlainBtn = this.shadowRoot.getElementById("save-plain-btn");
+    this._saveJsonlBtn = this.shadowRoot.getElementById("save-jsonl-btn");
+    this._copyRecordingBtn = this.shadowRoot.getElementById("copy-recording-btn");
+    this._recordingResultsClose = this.shadowRoot.getElementById("recording-results-close");
 
     this._pathInput.value = this._savedPath;
     this._friendlyNameInput.value = this._savedName;
 
     // Delete dialog handlers.
-    this.shadowRoot.getElementById("delete-cancel-btn").addEventListener("click", () => {
+    const closeDelete = () => {
       this._deleteDialog.style.display = "none";
       this._deleteConfirmTarget = null;
+    };
+    this.shadowRoot.getElementById("delete-cancel-btn").addEventListener("click", closeDelete);
+    this._deleteDialog.addEventListener("click", (e) => {
+      if (e.target === this._deleteDialog) closeDelete();
     });
 
     this.shadowRoot.getElementById("delete-confirm-btn").addEventListener("click", () => {
@@ -774,6 +1160,66 @@ select.level-select {
         this._deleteConfirmTarget = null;
       }
       this._deleteDialog.style.display = "none";
+    });
+
+    // Recording button: stop recording, fetch saved results, or open setup.
+    this._recordBtn.addEventListener("click", () => {
+      if (this._recordingState === "recording") {
+        this._stopRecording();
+      } else if (this._recordingState === "stopping") {
+        // Ignore clicks while stopping is in-flight.
+      } else if (this._recordingState === "completed") {
+        this._fetchResults();
+      } else {
+        this._openRecordingSetup();
+      }
+    });
+
+    // Recording setup dialog handlers.
+    const closeSetup = () => {
+      this._recordingSetupDialog.classList.remove("visible");
+      this._recordingSetupDialog.style.display = "none";
+    };
+    this._recordingSetupCancel.addEventListener("click", closeSetup);
+    this._recordingSetupDialog.addEventListener("click", (e) => {
+      if (e.target === this._recordingSetupDialog) closeSetup();
+    });
+
+    this._recordingSetupStart.addEventListener("click", () => {
+      const checkboxes = this._loggerChecklist.querySelectorAll("input[type='checkbox']:not(#select-all-checkbox)");
+      const selected = [];
+      const levelOverrides = {};
+      checkboxes.forEach(cb => {
+        if (cb.checked) {
+          const loggerName = cb.dataset.logger;
+          selected.push(loggerName);
+          const levelSelect = cb.closest(".checklist-item").querySelector(".recording-level-select");
+          if (levelSelect) levelOverrides[loggerName] = levelSelect.value;
+        }
+      });
+      this._recordingSetupDialog.classList.remove("visible");
+      this._recordingSetupDialog.style.display = "none";
+      this._startRecording(selected, levelOverrides);
+    });
+
+    // Recording results dialog handlers.
+    this._recordingResultsClose.addEventListener("click", () => {
+      this._closeRecordingResults();
+    });
+    this._recordingResultsDialog.addEventListener("click", (e) => {
+      if (e.target === this._recordingResultsDialog) this._closeRecordingResults();
+    });
+
+    this._savePlainBtn.addEventListener("click", () => {
+      this._downloadLogs("plain");
+    });
+
+    this._saveJsonlBtn.addEventListener("click", () => {
+      this._downloadLogs("jsonl");
+    });
+
+    this._copyRecordingBtn.addEventListener("click", () => {
+      this._copyLogsToClipboard();
     });
 
     const toggleSection = () => {
@@ -844,10 +1290,23 @@ select.level-select {
           logger_name: loggerPath,
           friendly_name: friendlyName
         });
+        this._clearState();
+        this._closeAddSection();
       }
+    });
 
-      this._clearState();
-      this._closeAddSection();
+    // ESC key closes any open dialog.
+    this.shadowRoot.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      if (this._deleteDialog.style.display === "flex") {
+        this._deleteDialog.style.display = "none";
+        this._deleteConfirmTarget = null;
+      } else if (this._recordingSetupDialog.style.display === "flex") {
+        this._recordingSetupDialog.classList.remove("visible");
+        this._recordingSetupDialog.style.display = "none";
+      } else if (this._recordingResultsDialog.style.display === "flex") {
+        this._closeRecordingResults();
+      }
     });
   }
 
@@ -987,9 +1446,15 @@ select.level-select {
         const isExpanded = this._expandedLogger === actualLoggerName;
         const logPanelHtml = isExpanded ? this._renderLogPanelHtml(actualLoggerName) : "";
 
+        const isRecording = this._recordingState === "recording" && this._recordingLoggers.includes(actualLoggerName);
+        const recordingLevel = this._recordingLevelOverrides[actualLoggerName] || currentLevel;
+        const recordingTag = isRecording
+          ? `<span class="recording-tag" title="Recording at ${this._escapeAttr(recordingLevel)}">${recordingLevel.charAt(0)}</span>`
+          : "";
+
         row.innerHTML = `
           <div class="log-name ${isUnavailable ? "unavailable" : ""}">
-            <div style="font-weight: 500;">${displayName}</div>
+            <div style="font-weight: 500;">${recordingTag}${displayName}</div>
             <div style="color: var(--secondary-text-color); font-size: 12px; margin-top: 2px;">
               ${actualLoggerName}
             </div>
@@ -1072,6 +1537,7 @@ select.level-select {
 
         this._attachBadgeHandlers(row);
         this._attachResetHandler(row);
+        this._attachCopyPanelHandler(row);
 
       } else {
         // Update existing row — only touch DOM when values actually changed.
@@ -1106,15 +1572,36 @@ select.level-select {
               panel.outerHTML = panelHtml;
               this._prevPanelHtml[actualLoggerName] = panelHtml;
               this._attachResetHandler(row);
+              this._attachCopyPanelHandler(row);
             }
           } else {
             row.insertAdjacentHTML("beforeend", panelHtml);
             this._prevPanelHtml[actualLoggerName] = panelHtml;
             this._attachResetHandler(row);
+            this._attachCopyPanelHandler(row);
           }
         } else if (panel) {
           panel.remove();
           delete this._prevPanelHtml[actualLoggerName];
+        }
+
+        // Update recording tag when recording state changes.
+        const isRecording = this._recordingState === "recording" && this._recordingLoggers.includes(actualLoggerName);
+        if (prev.recording !== isRecording) {
+          const nameDivFirst = row.querySelector(".log-name > div:first-child");
+          if (nameDivFirst) {
+            const existingTag = nameDivFirst.querySelector(".recording-tag");
+            if (isRecording && !existingTag) {
+              const tag = document.createElement("span");
+              tag.className = "recording-tag";
+              const recordingLevel = this._recordingLevelOverrides[actualLoggerName] || currentLevel;
+              tag.textContent = recordingLevel.charAt(0);
+              tag.title = `Recording at ${recordingLevel}`;
+              nameDivFirst.insertBefore(tag, nameDivFirst.firstChild);
+            } else if (!isRecording && existingTag) {
+              existingTag.remove();
+            }
+          }
         }
       }
 
@@ -1122,7 +1609,8 @@ select.level-select {
       this._prevRowStates[eid] = {
         level: currentLevel,
         warningCount: curWarn,
-        errorCount: curErr
+        errorCount: curErr,
+        recording: this._recordingState === "recording" && this._recordingLoggers.includes(actualLoggerName),
       };
 
       const expectedNode = this._activeList.children[index] || null;
@@ -1163,6 +1651,355 @@ select.level-select {
       this._addBtn.disabled = loggerPath.length === 0;
       this._addBtn.innerText = this._editingPath ? "Update" : "Save";
       this._addBtn.style.background = "var(--primary-color)";
+    }
+  }
+
+  // --- Recording methods ---
+
+  _openRecordingSetup() {
+    const LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"];
+    const managed = Object.entries(this._hass.states)
+      .filter(([eid]) => eid.startsWith("select."))
+      .filter(([, s]) => s.attributes.logger_name)
+      .sort(([, a], [, b]) => (a.attributes.friendly_name || "").localeCompare(b.attributes.friendly_name || ""));
+
+    let html = `<div class="select-all-row">
+      <input type="checkbox" id="select-all-checkbox">
+      <label for="select-all-checkbox">Select All</label>
+    </div>`;
+
+    managed.forEach(([, stateObj]) => {
+      const loggerName = stateObj.attributes.logger_name;
+      const friendlyName = stateObj.attributes.friendly_name || loggerName;
+      const currentLevel = stateObj.state;
+      const colors = this._levelColors(currentLevel);
+      const levelOpts = LOG_LEVELS.map(l =>
+        `<option value="${l}"${l === currentLevel ? " selected" : ""}>${l}</option>`
+      ).join("");
+      html += `<label class="checklist-item" style="background: ${colors.rowBg};">
+        <input type="checkbox" data-logger="${this._escapeAttr(loggerName)}">
+        <span class="logger-label">${this._escapeHtml(friendlyName)}</span>
+        <select class="recording-level-select" disabled style="color: ${colors.color}; background: ${colors.bg};">${levelOpts}</select>
+      </label>`;
+    });
+
+    this._loggerChecklist.innerHTML = html;
+
+    // Update checklist item background and text color when level dropdown changes.
+    this._loggerChecklist.querySelectorAll(".recording-level-select").forEach(sel => {
+      sel.addEventListener("change", () => {
+        const item = sel.closest(".checklist-item");
+        if (!item) return;
+        const colors = this._levelColors(sel.value);
+        item.style.background = colors.rowBg;
+        sel.style.color = colors.color;
+        sel.style.background = colors.bg;
+      });
+    });
+
+    const selectAll = this._loggerChecklist.querySelector("#select-all-checkbox");
+    selectAll.addEventListener("change", () => {
+      const checks = this._loggerChecklist.querySelectorAll("input[type='checkbox']:not(#select-all-checkbox)");
+      checks.forEach(cb => {
+        cb.checked = selectAll.checked;
+        // Also enable/disable level selects
+        const levelSelect = cb.closest(".checklist-item").querySelector(".recording-level-select");
+        if (levelSelect) levelSelect.disabled = !selectAll.checked;
+      });
+      this._validateRecordingSetup();
+    });
+
+    this._loggerChecklist.querySelectorAll("input[type='checkbox']:not(#select-all-checkbox)").forEach(cb => {
+      cb.addEventListener("change", () => {
+        // Uncheck select-all if one is unchecked.
+        const allChecks = this._loggerChecklist.querySelectorAll("input[type='checkbox']:not(#select-all-checkbox)");
+        const allChecked = Array.from(allChecks).every(c => c.checked);
+        selectAll.checked = allChecked;
+
+        // Enable/disable level select.
+        const levelSelect = cb.closest(".checklist-item").querySelector(".recording-level-select");
+        if (levelSelect) levelSelect.disabled = !cb.checked;
+
+        this._validateRecordingSetup();
+      });
+    });
+
+    this._validateRecordingSetup();
+    this._recordingSetupDialog.style.display = "flex";
+    requestAnimationFrame(() => {
+      this._recordingSetupDialog.classList.add("visible");
+    });
+  }
+
+  _validateRecordingSetup() {
+    const checked = this._loggerChecklist.querySelectorAll("input[type='checkbox']:checked:not(#select-all-checkbox)");
+    this._recordingSetupStart.disabled = checked.length === 0;
+  }
+
+  _startRecording(loggers, levelOverrides) {
+    this._recordingState = "recording";
+    this._recordingStartTime = Date.now();
+    this._recordingLoggers = loggers;
+    this._recordingLevelOverrides = levelOverrides || {};
+    this._recordingBuffer = [];
+    this._recordingDuration = 0;
+    this._recordingLogCount = 0;
+
+    this._updateRecordingUI();
+
+    this._recordingTimerInterval = setInterval(() => {
+      this._updateRecordingUI();
+      this._pollRecordingStatus();
+    }, 1000);
+
+    this._hass.connection.sendMessagePromise({
+      type: "log_manager/start_recording",
+      loggers: loggers,
+      max_duration: 300,
+      level_overrides: levelOverrides || {},
+    }).catch(err => {
+      console.error("Failed to start recording:", err);
+      this._recordingState = null;
+      this._cleanupRecordingIntervals();
+      this._updateRecordingUI();
+    });
+  }
+
+  _stopRecording() {
+    this._cleanupRecordingIntervals();
+    this._recordingState = "stopping";
+    this._updateRecordingUI();
+
+    this._hass.connection.sendMessagePromise({
+      type: "log_manager/stop_recording",
+    }).then(res => {
+      if (res && res.logs) {
+        this._recordingBuffer = res.logs;
+        this._recordingDuration = res.duration || 0;
+        this._recordingLogCount = res.log_count || 0;
+        this._recordingState = "results";
+        this._showRecordingResults();
+      }
+    }).catch(err => {
+      console.error("Failed to stop recording:", err);
+      this._recordingState = null;
+      this._updateRecordingUI();
+    });
+  }
+
+  _pollRecordingStatus() {
+    if (this._recordingState !== "recording") return;
+    this._hass.connection.sendMessagePromise({
+      type: "log_manager/recording_status"
+    }).then(status => {
+      if (status.status === "completed") {
+        this._cleanupRecordingIntervals();
+        this._recordingState = "completed";
+        this._recordingLogCount = status.log_count || 0;
+        this._recordingDuration = Math.round(status.elapsed || 0);
+        this._updateRecordingUI();
+      }
+    }).catch(() => {});
+  }
+
+  _showRecordingResults() {
+    const logs = this._recordingBuffer;
+    const duration = this._recordingDuration;
+    const count = this._recordingLogCount;
+    const hasEntries = count > 0;
+
+    this._savePlainBtn.disabled = !hasEntries;
+    this._saveJsonlBtn.disabled = !hasEntries;
+    this._copyRecordingBtn.disabled = !hasEntries;
+    this._recordingSummary.textContent = hasEntries
+      ? `Recorded ${count} log entr${count === 1 ? "y" : "ies"} over ${duration} second${duration === 1 ? "" : "s"}.`
+      : `No log events matched the configured levels during this session.`;
+
+    let previewHtml = "";
+    logs.slice().reverse().forEach(entry => {
+      const time = new Date(entry.timestamp * 1000).toLocaleTimeString(
+        undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }
+      );
+      const level = entry.level;
+      const colors = this._levelColors(level);
+      const logger = this._escapeHtml(entry.logger);
+      const msg = this._escapeHtml(entry.message);
+      previewHtml += `<div class="log-preview-line" style="background: ${colors.rowBg};">
+        <span class="log-preview-col level-col" style="color: ${colors.color};">${level}</span>
+        <span class="log-preview-col time-col">${time}</span>
+        <span class="log-preview-col logger-col" title="${this._escapeAttr(entry.logger)}">${logger}</span>
+        <span class="log-preview-col msg-col">${msg}</span>
+      </div>`;
+    });
+
+    if (hasEntries) {
+      this._logPreview.innerHTML = previewHtml;
+    } else {
+      this._logPreview.innerHTML = `<div style="color: var(--secondary-text-color); font-style: italic;">No log entries were captured.</div>`;
+    }
+    this._recordingResultsDialog.style.display = "flex";
+    requestAnimationFrame(() => {
+      this._recordingResultsDialog.classList.add("visible");
+    });
+  }
+
+  _closeRecordingResults() {
+    this._recordingResultsDialog.classList.remove("visible");
+    this._recordingResultsDialog.style.display = "none";
+    this._recordingState = null;
+    this._updateRecordingUI();
+  }
+
+  _downloadLogs(format) {
+    const logs = this._recordingBuffer;
+    const now = new Date();
+    const dateStr = now.getFullYear() +
+      String(now.getMonth() + 1).padStart(2, "0") +
+      String(now.getDate()).padStart(2, "0") + "_" +
+      String(now.getHours()).padStart(2, "0") +
+      String(now.getMinutes()).padStart(2, "0") +
+      String(now.getSeconds()).padStart(2, "0");
+
+    let content, filename, mimeType;
+
+    if (format === "plain") {
+      const lines = logs.map(entry => {
+        const time = new Date(entry.timestamp * 1000).toLocaleString(undefined, {
+          year: "numeric", month: "2-digit", day: "2-digit",
+          hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
+        });
+        const level = entry.level.padEnd(8);
+        const logger = entry.logger;
+        const msg = entry.message;
+        const src = entry.source ? ` (${entry.source})` : "";
+        return `[${time}] ${level} ${logger}  ${msg}${src}`;
+      }).join("\n");
+      content = lines + "\n";
+      filename = `recording_${dateStr}.log`;
+      mimeType = "text/plain";
+    } else {
+      content = logs.map(entry => JSON.stringify({
+        timestamp: entry.timestamp,
+        level: entry.level,
+        logger: entry.logger,
+        message: entry.message,
+        source: entry.source || undefined,
+      })).join("\n") + "\n";
+      filename = `recording_${dateStr}.jsonl`;
+      mimeType = "application/jsonl";
+    }
+
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  _copyLogsToClipboard() {
+    const logs = this._recordingBuffer;
+    if (!logs || logs.length === 0) return;
+    const text = logs.map(entry => {
+      const time = new Date(entry.timestamp * 1000).toLocaleString(undefined, {
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
+      });
+      const level = entry.level.padEnd(8);
+      const src = entry.source ? ` (${entry.source})` : "";
+      return `[${time}] ${level} ${entry.logger}  ${entry.message}${src}`;
+    }).join("\n") + "\n";
+
+    navigator.clipboard.writeText(text).then(() => {
+      const original = this._copyRecordingBtn.textContent;
+      this._copyRecordingBtn.textContent = "Copied!";
+      setTimeout(() => { this._copyRecordingBtn.textContent = original; }, 2000);
+    }).catch(err => {
+      console.error("Failed to copy:", err);
+    });
+  }
+
+  _checkExistingRecording() {
+    if (!this._hass) return;
+    this._hass.connection.sendMessagePromise({
+      type: "log_manager/recording_status"
+    }).then(status => {
+      if (status.status === "recording") {
+        this._recordingState = "recording";
+        this._recordingStartTime = Date.now() - Math.round((status.elapsed || 0) * 1000);
+        this._recordingLoggers = status.loggers || [];
+        this._recordingTimerInterval = setInterval(() => {
+          this._updateRecordingUI();
+          this._pollRecordingStatus();
+        }, 1000);
+        this._updateRecordingUI();
+      } else if (status.status === "completed") {
+        this._recordingState = "completed";
+        this._recordingLogCount = status.log_count || 0;
+        this._recordingDuration = Math.round(status.elapsed || 0);
+        this._updateRecordingUI();
+      }
+    }).catch(() => {});
+  }
+
+  _fetchResults() {
+    this._hass.connection.sendMessagePromise({
+      type: "log_manager/stop_recording",
+    }).then(res => {
+      if (res && res.logs) {
+        this._recordingBuffer = res.logs;
+        this._recordingDuration = res.duration || 0;
+        this._recordingLogCount = res.log_count || 0;
+        this._recordingState = "results";
+        this._showRecordingResults();
+      }
+    }).catch(err => {
+      console.error("Failed to fetch recording results:", err);
+      this._recordingState = null;
+      this._updateRecordingUI();
+    });
+  }
+
+  _cleanupRecordingIntervals() {
+    if (this._recordingTimerInterval) {
+      clearInterval(this._recordingTimerInterval);
+      this._recordingTimerInterval = null;
+    }
+  }
+
+  _updateRecordingUI() {
+    if (this._recordingState === "stopping") {
+      this._recordIcon.setAttribute("icon", "mdi:stop-circle");
+      this._recordBtn.classList.add("btn-record");
+      this._recordBtn.title = "Stopping recording...";
+      this._recordText.textContent = "Stopping...";
+    } else if (this._recordingState === "recording") {
+      this._recordIcon.setAttribute("icon", "mdi:stop-circle");
+      this._recordBtn.classList.add("btn-record");
+      this._recordBtn.title = "Stop recording";
+      const elapsed = Math.floor((Date.now() - this._recordingStartTime) / 1000);
+      const mins = String(Math.floor(elapsed / 60)).padStart(2, "0");
+      const secs = String(elapsed % 60).padStart(2, "0");
+      this._recordText.textContent = `Stop (${mins}:${secs})`;
+    } else if (this._recordingState === "completed") {
+      this._recordIcon.setAttribute("icon", "mdi:download");
+      this._recordBtn.classList.remove("btn-record");
+      this._recordBtn.title = "Save recorded logs";
+      this._recordText.textContent = `Save (${this._recordingLogCount})`;
+    } else if (this._recordingState === "results") {
+      this._recordIcon.setAttribute("icon", "mdi:check-circle");
+      this._recordBtn.classList.remove("btn-record");
+      this._recordBtn.title = "Results shown";
+      this._recordText.textContent = "Saved";
+    } else {
+      this._recordIcon.setAttribute("icon", "mdi:record-circle");
+      this._recordBtn.classList.remove("btn-record");
+      this._recordBtn.title = "Record log events for export";
+      this._recordText.textContent = "Record";
     }
   }
 
