@@ -8,11 +8,11 @@
 
 - **Visual polish** — Rows use card-like styling with rounded corners, subtle background, and hover shadow. Level select dropdowns are pill-shaped with monospace font and color-coded by current level (DEBUG=blue, INFO=green, WARNING=amber, ERROR=red, CRITICAL=purple). Action buttons always visible at low opacity, full on hover. Badges use ⚠/✕ icons with hover scale effect.
 
+- **Start/stop log collection with download** — Global "Record" button in the card actions opens a logger selection dialog (managed loggers only). `LogRecordingHandler` buffers all log events at each logger's configured level (10,000 entry ring buffer). Start/stop via websocket commands; timeout after 5 minutes. Results dialog shows colored preview with "Save as .log" (plain text) and "Save as .jsonl" buttons. Pulsing red dot + timer indicator while recording.
+
 ## Planned
 
 - **Configurable buffer size** — Allow card YAML config option `max_entries` to control how many recent log entries are stored per logger (default 10).
-
-- **Start/stop log collection with download** — Per-logger "Start collecting" button that buffers all log entries at the logger's configured level (not just WARNING+). "Stop and download" exports the buffer as a text file. Useful for capturing DEBUG-level diagnostics on demand.
 
 - **Logger grouping by prefix** — Group managed loggers by namespace prefix (e.g., `homeassistant.core.*`, `custom_components.hacs.*`) with collapsible sections. Reduces visual clutter when many loggers are active.
 
