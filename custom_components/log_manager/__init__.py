@@ -100,6 +100,8 @@ class LogRecordingHandler(logging.Handler):
         self.logger_names = logger_names
         self.buffer = []
         self.level_overrides = level_overrides or {}
+        self.logger_counts: dict[str, int] = {}
+        self._next_entry_id: int = 0
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -120,7 +122,10 @@ class LogRecordingHandler(logging.Handler):
             if record.levelno < min_level:
                 return
 
+            entry_id = self._next_entry_id
+            self._next_entry_id += 1
             entry = {
+                "id": entry_id,
                 "timestamp": record.created,
                 "level": record.levelname,
                 "logger": record.name,
@@ -134,6 +139,7 @@ class LogRecordingHandler(logging.Handler):
             self.buffer.append(entry)
             if len(self.buffer) > self.MAX_BUFFER_SIZE:
                 self.buffer.pop(0)
+            self.logger_counts[matched] = self.logger_counts.get(matched, 0) + 1
         except Exception:
             self.handleError(record)
 
@@ -212,6 +218,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     websocket_api.async_register_command(hass, ws_start_recording)
     websocket_api.async_register_command(hass, ws_stop_recording)
     websocket_api.async_register_command(hass, ws_recording_status)
+    websocket_api.async_register_command(hass, ws_recording_entries)
 
     hass.data[DOMAIN]["recording"] = {"status": "none"}
 
@@ -556,8 +563,47 @@ async def ws_recording_status(hass: HomeAssistant, connection, msg: dict):
         result["log_count"] = len(handler.buffer) if handler else 0
         result["max_duration"] = recording.get("max_duration", 300)
         result["loggers"] = list(recording.get("loggers", []))
+        result["logger_counts"] = handler.logger_counts if handler else {}
 
     connection.send_result(msg["id"], result)
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/recording_entries",
+    vol.Optional("after_id", default=0): int,
+})
+@websocket_api.async_response
+async def ws_recording_entries(hass: HomeAssistant, connection, msg: dict):
+    """
+    Return recorded log entries newer than after_id.
+    Used by the live view to poll incrementally.
+    """
+
+    recording = hass.data[DOMAIN].get("recording", {})
+    if recording.get("status") not in ("recording", "completed"):
+        connection.send_result(msg["id"], {"entries": [], "next_id": 0})
+        return
+
+    handler = recording.get("handler")
+    if not handler:
+        connection.send_result(msg["id"], {"entries": [], "next_id": 0})
+        return
+
+    after_id = msg["after_id"]
+    # Buffer is oldest-first. Scan from end for efficiency.
+    result_entries = []
+    for entry in reversed(handler.buffer):
+        if entry["id"] <= after_id:
+            break
+        result_entries.append(entry)
+    result_entries.reverse()
+
+    next_id = handler._next_entry_id
+
+    connection.send_result(msg["id"], {
+        "entries": result_entries,
+        "next_id": next_id,
+    })
 
 
 async def async_register_lovelace_resource(hass: HomeAssistant) -> None:
