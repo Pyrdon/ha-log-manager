@@ -835,7 +835,7 @@ select.level-select {
           position: fixed;
           top: 0; left: 0; right: 0; bottom: 0;
           background: rgba(0, 0, 0, 0.5);
-          z-index: 10000;
+          z-index: 999999999;
           align-items: center;
           justify-content: center;
         }
@@ -1079,6 +1079,11 @@ select.level-select {
             <span id="record-text">Record</span>
           </button>
 
+          <button class="toggle-add-btn" id="live-btn" style="display: none;" title="View live log entries">
+            <ha-icon icon="mdi:eye-outline" id="live-icon"></ha-icon>
+            <span id="live-text">Live</span>
+          </button>
+
           <button class="toggle-add-btn" onclick="window.location.href='/config/logs'" title="Open Home Assistant core log viewer">
             <ha-icon icon="mdi:text-box-search-outline"></ha-icon>
             View Core Logs
@@ -1108,16 +1113,38 @@ select.level-select {
         </div>
       </div>
 
-      <div class="dialog-overlay" id="recording-results-dialog">
+      <div class="dialog-overlay" id="recording-live-dialog">
         <div class="dialog-box dialog-box-wide">
-          <div class="dialog-title">Recording Complete</div>
-          <div id="recording-summary" class="recording-summary"></div>
-          <div id="log-preview" class="log-preview"></div>
-          <div class="dialog-actions">
-            <button class="btn-secondary" id="save-plain-btn">Save as .log</button>
-            <button class="btn-secondary" id="save-jsonl-btn">Save as .jsonl</button>
-            <button class="btn-secondary" id="copy-recording-btn" style="margin-right: auto;">Copy to clipboard</button>
-            <button class="btn-secondary" id="recording-results-close">Close</button>
+          <div id="live-top-bar" style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
+            <span class="recording-dot" id="live-status-dot"></span>
+            <span id="live-status-text" style="font-weight: 500;">Recording</span>
+            <span id="live-timer" style="font-family: monospace; font-size: 14px;"></span>
+            <span style="flex: 1;"></span>
+            <button class="btn-secondary" id="live-pause-btn" style="padding: 4px 12px; font-size: 13px;">Pause</button>
+            <button class="btn-danger" id="live-stop-btn" style="padding: 4px 12px; font-size: 13px;">Stop</button>
+          </div>
+
+          <div id="live-filter-bar" style="display: flex; gap: 8px; margin-bottom: 8px;">
+            <select id="live-logger-filter" style="flex: 1; padding: 4px 6px; border-radius: 4px; border: 1px solid var(--divider-color); background: var(--card-background-color); color: var(--primary-text-color); font-size: 13px;"></select>
+            <select id="live-level-filter" style="padding: 4px 6px; border-radius: 4px; border: 1px solid var(--divider-color); background: var(--card-background-color); color: var(--primary-text-color); font-size: 13px;">
+              <option value="ALL">All levels</option>
+              <option value="DEBUG">DEBUG+</option>
+              <option value="INFO">INFO+</option>
+              <option value="WARNING">WARNING+</option>
+              <option value="ERROR">ERROR+</option>
+              <option value="CRITICAL">CRITICAL</option>
+            </select>
+          </div>
+
+          <div id="live-log-preview" class="log-preview"></div>
+
+          <div id="live-summary" class="recording-summary" style="margin-top: 8px; margin-bottom: 0;"></div>
+
+          <div class="dialog-actions" id="live-export-actions">
+            <button class="btn-secondary" id="live-save-plain-btn" disabled>Save as .log</button>
+            <button class="btn-secondary" id="live-save-jsonl-btn" disabled>Save as .jsonl</button>
+            <button class="btn-secondary" id="live-copy-btn" disabled style="margin-right: auto;">Copy to clipboard</button>
+            <button class="btn-secondary" id="live-close-btn">Close</button>
           </div>
         </div>
       </div>
@@ -1140,13 +1167,20 @@ select.level-select {
     this._loggerChecklist = this.shadowRoot.getElementById("logger-checklist");
     this._recordingSetupStart = this.shadowRoot.getElementById("recording-setup-start");
     this._recordingSetupCancel = this.shadowRoot.getElementById("recording-setup-cancel");
-    this._recordingResultsDialog = this.shadowRoot.getElementById("recording-results-dialog");
-    this._recordingSummary = this.shadowRoot.getElementById("recording-summary");
-    this._logPreview = this.shadowRoot.getElementById("log-preview");
-    this._savePlainBtn = this.shadowRoot.getElementById("save-plain-btn");
-    this._saveJsonlBtn = this.shadowRoot.getElementById("save-jsonl-btn");
-    this._copyRecordingBtn = this.shadowRoot.getElementById("copy-recording-btn");
-    this._recordingResultsClose = this.shadowRoot.getElementById("recording-results-close");
+    this._recordingLiveDialog = this.shadowRoot.getElementById("recording-live-dialog");
+    this._liveTimer = this.shadowRoot.getElementById("live-timer");
+    this._liveStatusText = this.shadowRoot.getElementById("live-status-text");
+    this._liveStatusDot = this.shadowRoot.getElementById("live-status-dot");
+    this._livePauseBtn = this.shadowRoot.getElementById("live-pause-btn");
+    this._liveStopBtn = this.shadowRoot.getElementById("live-stop-btn");
+    this._liveLoggerFilter = this.shadowRoot.getElementById("live-logger-filter");
+    this._liveLevelFilter = this.shadowRoot.getElementById("live-level-filter");
+    this._livePreview = this.shadowRoot.getElementById("live-log-preview");
+    this._liveSummary = this.shadowRoot.getElementById("live-summary");
+    this._liveSavePlainBtn = this.shadowRoot.getElementById("live-save-plain-btn");
+    this._liveSaveJsonlBtn = this.shadowRoot.getElementById("live-save-jsonl-btn");
+    this._liveCopyBtn = this.shadowRoot.getElementById("live-copy-btn");
+    this._liveCloseBtn = this.shadowRoot.getElementById("live-close-btn");
 
     this._pathInput.value = this._savedPath;
     this._friendlyNameInput.value = this._savedName;
@@ -1209,23 +1243,48 @@ select.level-select {
       this._startRecording(selected, levelOverrides);
     });
 
-    // Recording results dialog handlers.
-    this._recordingResultsClose.addEventListener("click", () => {
-      this._closeRecordingResults();
-    });
-    this._recordingResultsDialog.addEventListener("click", (e) => {
-      if (e.target === this._recordingResultsDialog) this._closeRecordingResults();
+    // Live view button.
+    this._liveBtn.addEventListener("click", () => {
+      if (this._recordingState === "recording") {
+        this._openLiveView();
+      }
     });
 
-    this._savePlainBtn.addEventListener("click", () => {
+    // Live view dialog handlers.
+    const closeLive = () => {
+      this._closeLiveView();
+    };
+    this._liveCloseBtn.addEventListener("click", closeLive);
+    this._recordingLiveDialog.addEventListener("click", (e) => {
+      if (e.target === this._recordingLiveDialog) closeLive();
+    });
+
+    this._livePauseBtn.addEventListener("click", () => {
+      this._togglePauseLive();
+    });
+
+    this._liveStopBtn.addEventListener("click", () => {
+      this._closeLiveView();
+      this._stopRecording();
+    });
+
+    this._liveLoggerFilter.addEventListener("change", () => {
+      this._applyLiveFilters();
+    });
+
+    this._liveLevelFilter.addEventListener("change", () => {
+      this._applyLiveFilters();
+    });
+
+    this._liveSavePlainBtn.addEventListener("click", () => {
       this._downloadLogs("plain");
     });
 
-    this._saveJsonlBtn.addEventListener("click", () => {
+    this._liveSaveJsonlBtn.addEventListener("click", () => {
       this._downloadLogs("jsonl");
     });
 
-    this._copyRecordingBtn.addEventListener("click", () => {
+    this._liveCopyBtn.addEventListener("click", () => {
       this._copyLogsToClipboard();
     });
 
@@ -1311,8 +1370,8 @@ select.level-select {
       } else if (this._recordingSetupDialog.style.display === "flex") {
         this._recordingSetupDialog.classList.remove("visible");
         this._recordingSetupDialog.style.display = "none";
-      } else if (this._recordingResultsDialog.style.display === "flex") {
-        this._closeRecordingResults();
+      } else if (this._recordingLiveDialog.style.display === "flex") {
+        this._closeLiveView();
       }
     });
   }
@@ -1782,12 +1841,14 @@ select.level-select {
       console.error("Failed to start recording:", err);
       this._recordingState = null;
       this._cleanupRecordingIntervals();
+      this._recordingCounts = {};
       this._updateRecordingUI();
     });
   }
 
   _stopRecording() {
     this._cleanupRecordingIntervals();
+    this._cleanupLivePolling();
     this._recordingState = "stopping";
     this._updateRecordingUI();
 
@@ -1799,11 +1860,13 @@ select.level-select {
         this._recordingDuration = res.duration || 0;
         this._recordingLogCount = res.log_count || 0;
         this._recordingState = "results";
+        this._recordingCounts = {};
         this._showRecordingResults();
       }
     }).catch(err => {
       console.error("Failed to stop recording:", err);
       this._recordingState = null;
+      this._recordingCounts = {};
       this._updateRecordingUI();
     });
   }
@@ -1813,11 +1876,19 @@ select.level-select {
     this._hass.connection.sendMessagePromise({
       type: "log_manager/recording_status"
     }).then(status => {
+      this._recordingCounts = status.logger_counts || {};
+      if (status.max_duration) {
+        this._recordingMaxDuration = status.max_duration;
+      }
       if (status.status === "completed") {
         this._cleanupRecordingIntervals();
+        this._cleanupLivePolling();
         this._recordingState = "completed";
         this._recordingLogCount = status.log_count || 0;
         this._recordingDuration = Math.round(status.elapsed || 0);
+        if (this._liveViewOpen) {
+          this._fetchResults();
+        }
         this._updateRecordingUI();
       }
     }).catch(() => {});
@@ -1829,10 +1900,15 @@ select.level-select {
     const count = this._recordingLogCount;
     const hasEntries = count > 0;
 
-    this._savePlainBtn.disabled = !hasEntries;
-    this._saveJsonlBtn.disabled = !hasEntries;
-    this._copyRecordingBtn.disabled = !hasEntries;
-    this._recordingSummary.textContent = hasEntries
+    // Hide live top bar, show completed state.
+    this._liveStatusText.parentElement.style.display = "none";
+    this._livePauseBtn.style.display = "none";
+    this._liveStopBtn.style.display = "none";
+
+    this._liveSavePlainBtn.disabled = !hasEntries;
+    this._liveSaveJsonlBtn.disabled = !hasEntries;
+    this._liveCopyBtn.disabled = !hasEntries;
+    this._liveSummary.textContent = hasEntries
       ? `Recorded ${count} log entr${count === 1 ? "y" : "ies"} over ${duration} second${duration === 1 ? "" : "s"}.`
       : `No log events matched the configured levels during this session.`;
 
@@ -1854,20 +1930,36 @@ select.level-select {
     });
 
     if (hasEntries) {
-      this._logPreview.innerHTML = previewHtml;
+      this._livePreview.innerHTML = previewHtml;
     } else {
-      this._logPreview.innerHTML = `<div style="color: var(--secondary-text-color); font-style: italic;">No log entries were captured.</div>`;
+      this._livePreview.innerHTML = `<div style="color: var(--secondary-text-color); font-style: italic;">No log entries were captured.</div>`;
     }
-    this._recordingResultsDialog.style.display = "flex";
+    this._liveViewOpen = false;
+    this._recordingLiveDialog.style.display = "flex";
     requestAnimationFrame(() => {
-      this._recordingResultsDialog.classList.add("visible");
+      this._recordingLiveDialog.classList.add("visible");
     });
   }
 
-  _closeRecordingResults() {
-    this._recordingResultsDialog.classList.remove("visible");
-    this._recordingResultsDialog.style.display = "none";
-    this._recordingState = null;
+  _closeLiveView() {
+    this._cleanupLivePolling();
+    this._liveViewOpen = false;
+    this._recordingLiveDialog.classList.remove("visible");
+    this._recordingLiveDialog.style.display = "none";
+    // Restore live top bar state for next open.
+    this._liveStatusText.parentElement.style.display = "flex";
+    this._livePauseBtn.style.display = "";
+    this._liveStopBtn.style.display = "";
+    this._livePaused = false;
+    this._livePausedDuration = 0;
+    this._livePauseStartTime = 0;
+    this._liveLastId = 0;
+    this._livePreview.innerHTML = "";
+    this._liveLoggerFilter.innerHTML = "";
+    this._liveLevelFilter.value = "ALL";
+    if (this._recordingState === "results") {
+      this._recordingState = null;
+    }
     this._updateRecordingUI();
   }
 
@@ -1936,9 +2028,9 @@ select.level-select {
     }).join("\n") + "\n";
 
     navigator.clipboard.writeText(text).then(() => {
-      const original = this._copyRecordingBtn.textContent;
-      this._copyRecordingBtn.textContent = "Copied!";
-      setTimeout(() => { this._copyRecordingBtn.textContent = original; }, 2000);
+      const original = this._liveCopyBtn.textContent;
+      this._liveCopyBtn.textContent = "Copied!";
+      setTimeout(() => { this._liveCopyBtn.textContent = original; }, 2000);
     }).catch(err => {
       console.error("Failed to copy:", err);
     });
@@ -1953,6 +2045,8 @@ select.level-select {
         this._recordingState = "recording";
         this._recordingStartTime = Date.now() - Math.round((status.elapsed || 0) * 1000);
         this._recordingLoggers = status.loggers || [];
+        this._recordingMaxDuration = status.max_duration || 300;
+        this._recordingCounts = status.logger_counts || {};
         this._recordingTimerInterval = setInterval(() => {
           this._updateRecordingUI();
           this._pollRecordingStatus();
@@ -1962,6 +2056,7 @@ select.level-select {
         this._recordingState = "completed";
         this._recordingLogCount = status.log_count || 0;
         this._recordingDuration = Math.round(status.elapsed || 0);
+        this._recordingCounts = status.logger_counts || {};
         this._updateRecordingUI();
       }
     }).catch(() => {});
@@ -2025,12 +2120,193 @@ select.level-select {
     }
   }
 
+  _cleanupLivePolling() {
+    if (this._livePollInterval) {
+      clearInterval(this._livePollInterval);
+      this._livePollInterval = null;
+    }
+  }
+
+  _openLiveView() {
+    this._liveViewOpen = true;
+    this._livePaused = false;
+    this._livePausedDuration = 0;
+    this._livePauseStartTime = 0;
+    this._liveLastId = 0;
+    this._recordingBuffer = [];
+
+    // Build logger filter dropdown.
+    let filterHtml = '<option value="">All loggers</option>';
+    this._recordingLoggers.forEach(name => {
+      const stateObj = Object.values(this._hass.states).find(
+        s => s.attributes.logger_name === name
+      );
+      const label = stateObj ? (stateObj.attributes.friendly_name || name) : name;
+      filterHtml += `<option value="${this._escapeAttr(name)}">${this._escapeHtml(label)}</option>`;
+    });
+    this._liveLoggerFilter.innerHTML = filterHtml;
+    this._liveLoggerFilter.value = "";
+    this._liveLevelFilter.value = "ALL";
+    this._livePreview.innerHTML = "";
+
+    // Clear summary (will update on first poll).
+    this._liveSummary.textContent = "";
+
+    // Show top bar with live controls.
+    this._liveStatusText.parentElement.style.display = "flex";
+    this._livePauseBtn.style.display = "";
+    this._livePauseBtn.textContent = "Pause";
+    this._liveStopBtn.style.display = "";
+    this._liveSavePlainBtn.disabled = true;
+    this._liveSaveJsonlBtn.disabled = true;
+    this._liveCopyBtn.disabled = true;
+
+    this._updateLiveTimer();
+    this._recordingLiveDialog.style.display = "flex";
+    requestAnimationFrame(() => {
+      this._recordingLiveDialog.classList.add("visible");
+    });
+
+    // Start polling for entries. Timer always updates; polling gates on pause.
+    this._pollRecordingEntries();
+    this._livePollInterval = setInterval(() => {
+      if (!this._livePaused) {
+        this._pollRecordingEntries();
+      }
+      this._updateLiveTimer();
+    }, 1000);
+  }
+
+  _updateLiveTimer() {
+    if (!this._recordingLiveDialog) return;
+    if (this._recordingState === "recording") {
+      const elapsed = Math.floor((Date.now() - this._recordingStartTime) / 1000);
+      const remaining = Math.max(0, this._recordingMaxDuration - elapsed);
+      const mins = String(Math.floor(remaining / 60)).padStart(2, "0");
+      const secs = String(remaining % 60).padStart(2, "0");
+      this._liveTimer.textContent = `${mins}:${secs} remaining`;
+      this._liveStatusText.textContent = "Recording";
+      this._liveStatusDot.style.display = "";
+    } else {
+      this._liveTimer.textContent = "";
+      this._liveStatusText.textContent = "Recording Complete";
+      this._liveStatusDot.style.display = "none";
+    }
+  }
+
+  _pollRecordingEntries() {
+    if (this._recordingState !== "recording" && this._recordingState !== "completed") return;
+    this._hass.connection.sendMessagePromise({
+      type: "log_manager/recording_entries",
+      after_id: this._liveLastId,
+    }).then(res => {
+      if (!res || !res.entries) return;
+      const entries = res.entries;
+      if (entries.length === 0) {
+        this._updateLiveSummary();
+        return;
+      }
+
+      // Store in recordingBuffer for export.
+      for (const entry of entries) {
+        this._recordingBuffer.push(entry);
+      }
+
+      this._liveLastId = res.next_id || 0;
+      this._appendLiveEntries(entries);
+      this._updateLiveSummary();
+    }).catch(() => {});
+  }
+
+  _appendLiveEntries(entries) {
+    const container = this._livePreview;
+    const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 20;
+
+    const levelFilter = this._liveLevelFilter.value;
+    const loggerFilter = this._liveLoggerFilter.value;
+
+    for (const entry of entries) {
+      const time = new Date(entry.timestamp * 1000).toLocaleTimeString(
+        undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }
+      );
+      const level = entry.level;
+      const colors = this._levelColors(level);
+      const logger = this._escapeHtml(entry.logger);
+      const msg = this._escapeHtml(entry.message);
+      const div = document.createElement("div");
+      div.className = "log-preview-line";
+      div.dataset.logger = entry.logger;
+      div.dataset.level = level;
+      div.style.background = colors.rowBg;
+      div.innerHTML = `<span class="log-preview-col level-col" style="color: ${colors.color};">${level}</span>
+        <span class="log-preview-col time-col">${time}</span>
+        <span class="log-preview-col logger-col" title="${this._escapeAttr(entry.logger)}">${logger}</span>
+        <span class="log-preview-col msg-col">${msg}</span>`;
+
+      // Apply current filters.
+      div.style.display = this._entryMatchesFilter(entry, levelFilter, loggerFilter) ? "" : "none";
+
+      container.appendChild(div);
+    }
+
+    if (atBottom) {
+      container.scrollTop = container.scrollHeight;
+    }
+  }
+
+  _entryMatchesFilter(entry, levelFilter, loggerFilter) {
+    if (loggerFilter && entry.logger !== loggerFilter && !entry.logger.startsWith(loggerFilter + ".")) {
+      return false;
+    }
+    if (levelFilter && levelFilter !== "ALL") {
+      const levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"];
+      const minIdx = levels.indexOf(levelFilter);
+      const entryIdx = levels.indexOf(entry.level);
+      if (entryIdx < minIdx) return false;
+    }
+    return true;
+  }
+
+  _applyLiveFilters() {
+    const levelFilter = this._liveLevelFilter.value;
+    const loggerFilter = this._liveLoggerFilter.value;
+    this._livePreview.querySelectorAll(".log-preview-line").forEach(el => {
+      el.style.display = this._entryMatchesFilter(
+        { logger: el.dataset.logger, level: el.dataset.level },
+        levelFilter,
+        loggerFilter
+      ) ? "" : "none";
+    });
+  }
+
+  _togglePauseLive() {
+    this._livePaused = !this._livePaused;
+    this._livePauseBtn.textContent = this._livePaused ? "Resume" : "Pause";
+    if (this._livePaused) {
+      this._livePauseStartTime = Date.now();
+    } else {
+      if (this._livePauseStartTime) {
+        this._livePausedDuration += Date.now() - this._livePauseStartTime;
+        this._livePauseStartTime = 0;
+      }
+      this._pollRecordingEntries();
+    }
+  }
+
+  _updateLiveSummary() {
+    const total = this._recordingBuffer.length;
+    const bufferPct = Math.round((total / 10000) * 100);
+    const loggerCount = Object.keys(this._recordingCounts).length;
+    this._liveSummary.textContent = `${total} entry${total === 1 ? "" : "s"} \u00B7 buffer at ${bufferPct}% \u00B7 ${loggerCount} logger${loggerCount === 1 ? "" : "s"} active`;
+  }
+
   _updateRecordingUI() {
     if (this._recordingState === "stopping") {
       this._recordIcon.setAttribute("icon", "mdi:stop-circle");
       this._recordBtn.classList.add("btn-record");
       this._recordBtn.title = "Stopping recording...";
       this._recordText.textContent = "Stopping...";
+      this._liveBtn.style.display = "none";
     } else if (this._recordingState === "recording") {
       this._recordIcon.setAttribute("icon", "mdi:stop-circle");
       this._recordBtn.classList.add("btn-record");
@@ -2040,21 +2316,25 @@ select.level-select {
       const mins = String(Math.floor(remaining / 60)).padStart(2, "0");
       const secs = String(remaining % 60).padStart(2, "0");
       this._recordText.textContent = `Stop (${mins}:${secs})`;
+      this._liveBtn.style.display = "";
     } else if (this._recordingState === "completed") {
-      this._recordIcon.setAttribute("icon", "mdi:download");
+      this._recordIcon.setAttribute("icon", "mdi:eye");
       this._recordBtn.classList.remove("btn-record");
-      this._recordBtn.title = "Save recorded logs";
-      this._recordText.textContent = `Save (${this._recordingLogCount})`;
+      this._recordBtn.title = "View recorded logs";
+      this._recordText.textContent = `View (${this._recordingLogCount})`;
+      this._liveBtn.style.display = "none";
     } else if (this._recordingState === "results") {
-      this._recordIcon.setAttribute("icon", "mdi:check-circle");
+      this._recordIcon.setAttribute("icon", "mdi:eye-check");
       this._recordBtn.classList.remove("btn-record");
-      this._recordBtn.title = "Results shown";
-      this._recordText.textContent = "Saved";
+      this._recordBtn.title = "Viewing recording results";
+      this._recordText.textContent = "Viewing";
+      this._liveBtn.style.display = "none";
     } else {
       this._recordIcon.setAttribute("icon", "mdi:record-circle");
       this._recordBtn.classList.remove("btn-record");
       this._recordBtn.title = "Record log events for export";
       this._recordText.textContent = "Record";
+      this._liveBtn.style.display = "none";
     }
   }
 
