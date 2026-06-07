@@ -117,7 +117,7 @@ class LogManagerCard extends HTMLElement {
             <ha-icon icon="mdi:refresh" style="--mdi-icon-size: 14px;"></ha-icon>
             Reset counters
           </button>
-          <button class="copy-panel-btn" data-logger="${this._escapeAttr(loggerName)}">
+          <button class="copy-panel-btn" data-logger="${this._escapeAttr(loggerName)}"${recentLogs.length === 0 ? " disabled" : ""}>
             <ha-icon icon="mdi:content-copy" style="--mdi-icon-size: 14px;"></ha-icon>
             Copy
           </button>
