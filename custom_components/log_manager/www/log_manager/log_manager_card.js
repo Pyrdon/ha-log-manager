@@ -22,6 +22,8 @@ class LogManagerCard extends HTMLElement {
     this._recordingDuration = 0;
     this._recordingLogCount = 0;
     this._recordingTimerInterval = null;
+    this._recordingMaxDuration = 300;
+    this._recordingCounts = {};
 
     this._savedPath = sessionStorage.getItem("logManagerPath") || "";
     this._savedName = sessionStorage.getItem("logManagerName") || "";
@@ -422,6 +424,11 @@ class LogManagerCard extends HTMLElement {
         .counter-badge.error-badge {
           background: rgba(244, 67, 54, 0.18);
           color: var(--error-color);
+        }
+
+        .counter-badge.recording-count-badge {
+          background: rgba(76, 175, 80, 0.18);
+          color: #4caf50;
         }
 
         .log-panel {
@@ -1538,6 +1545,11 @@ select.level-select {
         this._attachBadgeHandlers(row);
         this._attachResetHandler(row);
         this._attachCopyPanelHandler(row);
+        this._updateRecordingCountBadge(
+          row, actualLoggerName,
+          this._recordingCounts[actualLoggerName] || 0,
+          this._recordingState === "recording" && this._recordingLoggers.includes(actualLoggerName)
+        );
 
       } else {
         // Update existing row — only touch DOM when values actually changed.
@@ -1603,6 +1615,12 @@ select.level-select {
             }
           }
         }
+
+        // Update recording count badge when count changes.
+        const recordingCount = this._recordingCounts[actualLoggerName] || 0;
+        if (prev.recordingCount !== recordingCount) {
+          this._updateRecordingCountBadge(row, actualLoggerName, recordingCount, isRecording);
+        }
       }
 
       // Cache state for next update to avoid unnecessary DOM touches.
@@ -1611,6 +1629,7 @@ select.level-select {
         warningCount: curWarn,
         errorCount: curErr,
         recording: this._recordingState === "recording" && this._recordingLoggers.includes(actualLoggerName),
+        recordingCount: this._recordingCounts[actualLoggerName] || 0,
       };
 
       const expectedNode = this._activeList.children[index] || null;
@@ -1970,6 +1989,39 @@ select.level-select {
     if (this._recordingTimerInterval) {
       clearInterval(this._recordingTimerInterval);
       this._recordingTimerInterval = null;
+    }
+  }
+
+  _updateRecordingCountBadge(row, loggerName, count, isRecording) {
+    let container = row.querySelector(".counter-badges");
+    let badge = container ? container.querySelector(".recording-count-badge") : null;
+
+    if (isRecording && count > 0) {
+      const stateObj = this._hass && Object.values(this._hass.states).find(
+        s => s.attributes.logger_name === loggerName
+      );
+      const friendlyName = stateObj ? (stateObj.attributes.friendly_name || loggerName) : loggerName;
+      const title = `${count} entries recorded for ${friendlyName}`;
+      if (badge) {
+        badge.textContent = `\u{1F4DD} ${count}`;
+        badge.title = title;
+      } else {
+        if (!container) {
+          container = document.createElement("div");
+          container.className = "counter-badges";
+          row.insertBefore(container, row.querySelector(".log-controls"));
+        }
+        badge = document.createElement("span");
+        badge.className = "counter-badge recording-count-badge";
+        badge.title = title;
+        badge.textContent = `\u{1F4DD} ${count}`;
+        container.appendChild(badge);
+      }
+    } else if (badge) {
+      badge.remove();
+      if (container && container.children.length === 0) {
+        container.remove();
+      }
     }
   }
 
