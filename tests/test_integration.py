@@ -1,0 +1,202 @@
+import logging
+from unittest.mock import AsyncMock, patch
+
+from homeassistant.core import HomeAssistant
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components.log_manager import DOMAIN
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _mock_hass_http(hass):
+    """Ensure hass.http is available for static path registration."""
+    hass.http = AsyncMock()
+    hass.http.async_register_static_paths = AsyncMock()
+    hass.http.register_static_path = AsyncMock()
+    yield
+
+
+@pytest.fixture(autouse=True, name="expected_lingering_timers")
+def _expected_lingering_timers():
+    return True
+
+
+async def test_async_setup_entry_initializes_domain_data(hass: HomeAssistant):
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert DOMAIN in hass.data
+    assert "loggers" in hass.data[DOMAIN]
+    assert hass.data[DOMAIN]["loggers"] == {}
+    assert "counters" in hass.data[DOMAIN]
+    assert "store" in hass.data[DOMAIN]
+    assert "save_data" in hass.data[DOMAIN]
+    assert "counter_handler" in hass.data[DOMAIN]
+    assert "recording" in hass.data[DOMAIN]
+
+
+async def test_async_setup_entry_restores_stored_loggers_and_levels(hass):
+    store_data = {
+        "loggers": {
+            "my.logger": {"friendly_name": "My Logger", "level": "WARNING"},
+            "other": {"friendly_name": "Other", "level": "DEBUG"},
+        }
+    }
+
+    with patch(
+        "custom_components.log_manager.LogManagerStore.async_load",
+    ) as mock_load:
+        mock_load.return_value = store_data
+        entry = MockConfigEntry(domain=DOMAIN, data={})
+        entry.add_to_hass(hass)
+
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    loggers = hass.data[DOMAIN]["loggers"]
+    assert loggers["my.logger"]["friendly_name"] == "My Logger"
+    assert loggers["my.logger"]["level"] == "WARNING"
+    assert loggers["other"]["friendly_name"] == "Other"
+    assert loggers["other"]["level"] == "DEBUG"
+
+    assert logging.getLogger("my.logger").getEffectiveLevel() == logging.WARNING
+    assert logging.getLogger("other").getEffectiveLevel() == logging.DEBUG
+
+
+async def test_add_logger_service(hass):
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    await hass.services.async_call(
+        DOMAIN, "add_logger",
+        {"logger_name": "test.module", "friendly_name": "Test Module"},
+        blocking=True,
+    )
+
+    assert "test.module" in hass.data[DOMAIN]["loggers"]
+    assert hass.data[DOMAIN]["loggers"]["test.module"]["friendly_name"] == "Test Module"
+    assert hass.data[DOMAIN]["loggers"]["test.module"]["level"] == "NOTSET"
+    assert "test.module" in hass.data[DOMAIN]["counters"]
+
+
+async def test_remove_logger_service(hass):
+    store_data = {
+        "loggers": {
+            "to.remove": {"friendly_name": "To Remove", "level": "NOTSET"},
+        }
+    }
+
+    with patch(
+        "custom_components.log_manager.LogManagerStore.async_load",
+    ) as mock_load:
+        mock_load.return_value = store_data
+        entry = MockConfigEntry(domain=DOMAIN, data={})
+        entry.add_to_hass(hass)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    await hass.services.async_call(
+        DOMAIN, "remove_logger",
+        {"logger_name": "to.remove"},
+        blocking=True,
+    )
+
+    assert "to.remove" not in hass.data[DOMAIN]["loggers"]
+    assert "to.remove" not in hass.data[DOMAIN]["counters"]
+
+
+async def test_add_logger_duplicate_is_rejected(hass, caplog):
+    store_data = {
+        "loggers": {
+            "existing": {"friendly_name": "Existing", "level": "NOTSET"},
+        }
+    }
+    caplog.set_level(logging.WARNING)
+
+    with patch(
+        "custom_components.log_manager.LogManagerStore.async_load",
+    ) as mock_load:
+        mock_load.return_value = store_data
+        entry = MockConfigEntry(domain=DOMAIN, data={})
+        entry.add_to_hass(hass)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    await hass.services.async_call(
+        DOMAIN, "add_logger",
+        {"logger_name": "existing", "friendly_name": "Existing"},
+        blocking=True,
+    )
+
+    assert "already being managed" in caplog.text
+    assert hass.data[DOMAIN]["loggers"]["existing"]["friendly_name"] == "Existing"
+
+
+async def test_reset_counters_for_specific_logger(hass):
+    store_data = {
+        "loggers": {
+            "logger.a": {"friendly_name": "Logger A", "level": "NOTSET"},
+            "logger.b": {"friendly_name": "Logger B", "level": "NOTSET"},
+        }
+    }
+
+    with patch(
+        "custom_components.log_manager.LogManagerStore.async_load",
+    ) as mock_load:
+        mock_load.return_value = store_data
+        entry = MockConfigEntry(domain=DOMAIN, data={})
+        entry.add_to_hass(hass)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    hass.data[DOMAIN]["counters"]["logger.a"]["warning"] = 5
+    hass.data[DOMAIN]["counters"]["logger.b"]["error"] = 3
+
+    await hass.services.async_call(
+        DOMAIN, "reset_counters",
+        {"logger_name": "logger.a"},
+        blocking=True,
+    )
+
+    counters = hass.data[DOMAIN]["counters"]
+    assert counters["logger.a"]["warning"] == 0
+    assert counters["logger.a"]["error"] == 0
+    assert counters["logger.b"]["error"] == 3
+
+
+async def test_reset_all_counters(hass):
+    store_data = {
+        "loggers": {
+            "logger.a": {"friendly_name": "Logger A", "level": "NOTSET"},
+            "logger.b": {"friendly_name": "Logger B", "level": "NOTSET"},
+        }
+    }
+
+    with patch(
+        "custom_components.log_manager.LogManagerStore.async_load",
+    ) as mock_load:
+        mock_load.return_value = store_data
+        entry = MockConfigEntry(domain=DOMAIN, data={})
+        entry.add_to_hass(hass)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    hass.data[DOMAIN]["counters"]["logger.a"]["warning"] = 5
+    hass.data[DOMAIN]["counters"]["logger.b"]["error"] = 3
+
+    await hass.services.async_call(
+        DOMAIN, "reset_counters",
+        {},
+        blocking=True,
+    )
+
+    counters = hass.data[DOMAIN]["counters"]
+    assert counters["logger.a"]["warning"] == 0
+    assert counters["logger.b"]["error"] == 0
