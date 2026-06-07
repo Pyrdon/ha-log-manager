@@ -1757,6 +1757,8 @@ select.level-select {
       loggers: loggers,
       max_duration: 300,
       level_overrides: levelOverrides || {},
+    }).then(res => {
+      this._recordingMaxDuration = (res && res.max_duration) || 300;
     }).catch(err => {
       console.error("Failed to start recording:", err);
       this._recordingState = null;
@@ -1967,7 +1969,8 @@ select.level-select {
   _cleanupRecordingIntervals() {
     if (this._recordingTimerInterval) {
       clearInterval(this._recordingTimerInterval);
-      this._recordingTimerInterval = null;
+    this._recordingTimerInterval = null;
+    this._recordingMaxDuration = 300;
     }
   }
 
@@ -1982,8 +1985,9 @@ select.level-select {
       this._recordBtn.classList.add("btn-record");
       this._recordBtn.title = "Stop recording";
       const elapsed = Math.floor((Date.now() - this._recordingStartTime) / 1000);
-      const mins = String(Math.floor(elapsed / 60)).padStart(2, "0");
-      const secs = String(elapsed % 60).padStart(2, "0");
+      const remaining = Math.max(0, this._recordingMaxDuration - elapsed);
+      const mins = String(Math.floor(remaining / 60)).padStart(2, "0");
+      const secs = String(remaining % 60).padStart(2, "0");
       this._recordText.textContent = `Stop (${mins}:${secs})`;
     } else if (this._recordingState === "completed") {
       this._recordIcon.setAttribute("icon", "mdi:download");
