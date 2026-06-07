@@ -1969,8 +1969,7 @@ select.level-select {
   _cleanupRecordingIntervals() {
     if (this._recordingTimerInterval) {
       clearInterval(this._recordingTimerInterval);
-    this._recordingTimerInterval = null;
-    this._recordingMaxDuration = 300;
+      this._recordingTimerInterval = null;
     }
   }
 
