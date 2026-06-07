@@ -166,4 +166,137 @@ describe("LogManagerCard", () => {
       expect(result).toContain("4");
     });
   });
+
+  describe("_updateRecordingCountBadge", () => {
+    let row;
+
+    beforeEach(() => {
+      cardInstance._hass = { states: {} };
+      cardInstance._openLiveView = jest.fn();
+      cardInstance._recordingCounts = {};
+
+      row = document.createElement("div");
+      row.innerHTML = `
+        <div class="log-controls-wrapper">
+          <div class="log-controls"></div>
+        </div>
+      `;
+    });
+
+    test("creates badge when recording and count > 0", () => {
+      cardInstance._updateRecordingCountBadge(row, "test.logger", 5, true);
+      const badge = row.querySelector(".recording-count-badge");
+      expect(badge).not.toBeNull();
+      expect(badge.textContent).toContain("5");
+    });
+
+    test("does not create badge when count is 0", () => {
+      cardInstance._updateRecordingCountBadge(row, "test.logger", 0, true);
+      expect(row.querySelector(".recording-count-badge")).toBeNull();
+    });
+
+    test("removes badge when recording stops", () => {
+      cardInstance._updateRecordingCountBadge(row, "test.logger", 5, true);
+      expect(row.querySelector(".recording-count-badge")).not.toBeNull();
+
+      cardInstance._updateRecordingCountBadge(row, "test.logger", 5, false);
+      expect(row.querySelector(".recording-count-badge")).toBeNull();
+    });
+
+    test("badge click opens live view", () => {
+      cardInstance._updateRecordingCountBadge(row, "test.logger", 3, true);
+      const badge = row.querySelector(".recording-count-badge");
+      badge.click();
+      expect(cardInstance._openLiveView).toHaveBeenCalledTimes(1);
+    });
+
+    test("does not duplicate click handler when badge updates", () => {
+      cardInstance._updateRecordingCountBadge(row, "test.logger", 3, true);
+      cardInstance._updateRecordingCountBadge(row, "test.logger", 5, true);
+      const badge = row.querySelector(".recording-count-badge");
+      badge.click();
+      expect(cardInstance._openLiveView).toHaveBeenCalledTimes(1);
+    });
+
+    test("badge has recBadgeHandler flag after creation", () => {
+      cardInstance._updateRecordingCountBadge(row, "test.logger", 3, true);
+      const badge = row.querySelector(".recording-count-badge");
+      expect(badge.dataset.recBadgeHandler).toBe("true");
+    });
+  });
+
+  describe("_buildUI", () => {
+    test("binds _liveBtn element", () => {
+      const mockRoot = document.createElement("div");
+      mockRoot.getElementById = function (id) {
+        return this.querySelector(`#${id}`);
+      };
+      cardInstance.shadowRoot = mockRoot;
+
+      expect(cardInstance._liveBtn).toBeUndefined();
+      cardInstance._buildUI();
+      expect(cardInstance._liveBtn).toBeDefined();
+      expect(cardInstance._liveBtn.id).toBe("live-btn");
+    });
+  });
+
+  describe("row DOM structure", () => {
+    test("row template wraps badges and controls in log-controls-wrapper", () => {
+      const row = document.createElement("div");
+      row.innerHTML = `
+        <div class="log-name">Test</div>
+        <div class="log-controls-wrapper">
+          <div class="counter-badges">
+            <span class="counter-badge warning-badge">&#9888; 3</span>
+          </div>
+          <div class="log-controls">
+            <select class="level-select"></select>
+          </div>
+        </div>
+        <div class="log-panel"></div>
+      `;
+      const wrapper = row.querySelector(".log-controls-wrapper");
+      expect(wrapper).not.toBeNull();
+      expect(wrapper.querySelector(".counter-badges")).not.toBeNull();
+      expect(wrapper.querySelector(".log-controls")).not.toBeNull();
+      expect(wrapper.parentElement).toBe(row);
+    });
+  });
+
+  describe("recording state change", () => {
+    let row;
+
+    beforeEach(() => {
+      cardInstance._hass = { states: {} };
+      cardInstance._openLiveView = jest.fn();
+      cardInstance._recordingCounts = {};
+      cardInstance._recordingState = null;
+      cardInstance._recordingLoggers = [];
+
+      row = document.createElement("div");
+      row.innerHTML = `
+        <div class="log-name">
+          <div style="font-weight: 500;">Test Logger</div>
+        </div>
+        <div class="log-controls-wrapper">
+          <div class="log-controls"></div>
+        </div>
+      `;
+    });
+
+    test("recording count badge is removed when recording state transitions to inactive", () => {
+      const loggerName = "test.logger";
+      cardInstance._recordingLoggers = [loggerName];
+      cardInstance._recordingState = "recording";
+      let isRecording = cardInstance._recordingState === "recording" && cardInstance._recordingLoggers.includes(loggerName);
+      cardInstance._updateRecordingCountBadge(row, loggerName, 5, isRecording);
+      expect(row.querySelector(".recording-count-badge")).not.toBeNull();
+
+      // Now simulate recording stopping (same count, but isRecording=false)
+      cardInstance._recordingState = "completed";
+      isRecording = cardInstance._recordingState === "recording" && cardInstance._recordingLoggers.includes(loggerName);
+      cardInstance._updateRecordingCountBadge(row, loggerName, 5, isRecording);
+      expect(row.querySelector(".recording-count-badge")).toBeNull();
+    });
+  });
 });

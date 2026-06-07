@@ -273,7 +273,8 @@ class LogManagerCard extends HTMLElement {
           if (!badgesContainer) {
             badgesContainer = document.createElement("div");
             badgesContainer.className = "counter-badges";
-            row.insertBefore(badgesContainer, row.querySelector(".log-controls"));
+            const wrapper = row.querySelector(".log-controls-wrapper");
+            wrapper.insertBefore(badgesContainer, wrapper.querySelector(".log-controls"));
           }
           badge = document.createElement("span");
           badge.className = `counter-badge ${cls}`;
@@ -390,7 +391,8 @@ class LogManagerCard extends HTMLElement {
 
         .log-controls { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
-        .counter-badges { display: flex; align-items: center; gap: 4px; flex-shrink: 0; margin-right: 8px; }
+        .counter-badges { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+        .log-controls-wrapper { display: flex; align-items: center; gap: 8px; flex-shrink: 0; min-width: 0; }
 
         .counter-badge {
           display: inline-flex;
@@ -1181,6 +1183,7 @@ select.level-select {
     this._liveSaveJsonlBtn = this.shadowRoot.getElementById("live-save-jsonl-btn");
     this._liveCopyBtn = this.shadowRoot.getElementById("live-copy-btn");
     this._liveCloseBtn = this.shadowRoot.getElementById("live-close-btn");
+    this._liveBtn = this.shadowRoot.getElementById("live-btn");
 
     this._pathInput.value = this._savedPath;
     this._friendlyNameInput.value = this._savedName;
@@ -1525,15 +1528,17 @@ select.level-select {
               ${actualLoggerName}
             </div>
           </div>
-          ${counterBadgesDiv}
-          <div class="log-controls">
-            ${selectHtml}
-            <button class="icon-btn action-btn edit-btn" title="Edit">
-              <ha-icon icon="mdi:pencil"></ha-icon>
-            </button>
-            <button class="icon-btn action-btn remove-btn" title="Remove">
-              <ha-icon icon="mdi:delete"></ha-icon>
-            </button>
+          <div class="log-controls-wrapper">
+            ${counterBadgesDiv}
+            <div class="log-controls">
+              ${selectHtml}
+              <button class="icon-btn action-btn edit-btn" title="Edit">
+                <ha-icon icon="mdi:pencil"></ha-icon>
+              </button>
+              <button class="icon-btn action-btn remove-btn" title="Remove">
+                <ha-icon icon="mdi:delete"></ha-icon>
+              </button>
+            </div>
           </div>
           ${logPanelHtml}
         `;
@@ -1675,9 +1680,9 @@ select.level-select {
           }
         }
 
-        // Update recording count badge when count changes.
+        // Update recording count badge when count or recording state changes.
         const recordingCount = this._recordingCounts[actualLoggerName] || 0;
-        if (prev.recordingCount !== recordingCount) {
+        if (prev.recording !== isRecording || prev.recordingCount !== recordingCount) {
           this._updateRecordingCountBadge(row, actualLoggerName, recordingCount, isRecording);
         }
       }
@@ -2097,19 +2102,30 @@ select.level-select {
       );
       const friendlyName = stateObj ? (stateObj.attributes.friendly_name || loggerName) : loggerName;
       const title = `${count} entries recorded for ${friendlyName}`;
+      const attachClickListener = (el) => {
+        if (el.dataset.recBadgeHandler) return;
+        el.dataset.recBadgeHandler = "true";
+        el.addEventListener("click", (e) => {
+          e.stopPropagation();
+          this._openLiveView();
+        });
+      };
       if (badge) {
         badge.textContent = `\u{1F4DD} ${count}`;
         badge.title = title;
+        attachClickListener(badge);
       } else {
         if (!container) {
           container = document.createElement("div");
           container.className = "counter-badges";
-          row.insertBefore(container, row.querySelector(".log-controls"));
+          const wrapper = row.querySelector(".log-controls-wrapper");
+          wrapper.insertBefore(container, wrapper.querySelector(".log-controls"));
         }
         badge = document.createElement("span");
         badge.className = "counter-badge recording-count-badge";
         badge.title = title;
         badge.textContent = `\u{1F4DD} ${count}`;
+        attachClickListener(badge);
         container.appendChild(badge);
       }
     } else if (badge) {
