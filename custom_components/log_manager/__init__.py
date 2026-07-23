@@ -1,23 +1,34 @@
+import copy
 import logging
-import os
-import time
-import voluptuous as vol
 import mimetypes
+import os
+import threading
 
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+import voluptuous as vol
+
 from homeassistant.components import websocket_api
 from homeassistant.components.http import StaticPathConfig
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.dispatcher import async_dispatcher_send
-from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 
-DOMAIN = "log_manager"
-STORAGE_KEY = f"{DOMAIN}.config"
-STORAGE_VERSION = 2
+from .const import DOMAIN, STORAGE_KEY, STORAGE_VERSION
+from .recording import (
+    async_register_recording_commands,
+    async_stop_recording_session,
+)
 
 _LOGGER = logging.getLogger(__name__)
+
+_EMPTY_COUNTERS = {
+    "warning": 0,
+    "error": 0,
+    "last_warning": "",
+    "last_error": "",
+    "recent_logs": [],
+}
 
 
 class LogCounterHandler(logging.Handler):
@@ -28,6 +39,7 @@ class LogCounterHandler(logging.Handler):
     def __init__(self, hass: HomeAssistant) -> None:
         super().__init__(logging.WARNING)
         self.hass = hass
+        self._lock = threading.Lock()
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -38,25 +50,21 @@ class LogCounterHandler(logging.Handler):
             # Match the record against managed loggers, including child loggers.
             # e.g. "custom_components.voice_satellite.sensor" matches
             # the managed logger "custom_components.voice_satellite".
+            # When several managed loggers are parents of the record's logger,
+            # attribute it to the most specific one.
             matched_name = None
             if record.name in loggers:
                 matched_name = record.name
             else:
-                for name in loggers:
-                    if record.name.startswith(name + "."):
-                        matched_name = name
-                        break
+                matches = [
+                    name for name in loggers
+                    if record.name.startswith(name + ".")
+                ]
+                if matches:
+                    matched_name = max(matches, key=len)
 
             if matched_name is None:
                 return
-
-            counters = self.hass.data[DOMAIN]["counters"]
-            if matched_name not in counters:
-                counters[matched_name] = {
-                    "warning": 0, "error": 0,
-                    "last_warning": "", "last_error": "",
-                    "recent_logs": []
-                }
 
             msg = record.getMessage()
             level_name = record.levelname
@@ -64,92 +72,48 @@ class LogCounterHandler(logging.Handler):
 
             entry = {
                 "timestamp": record.created,
+                "logger": record.name,
                 "level": level_name,
                 "message": msg,
-                "source": source
+                "source": source,
             }
 
-            recent = counters[matched_name]["recent_logs"]
-            recent.insert(0, entry)
-            if len(recent) > self.MAX_RECENT:
-                del recent[self.MAX_RECENT:]
+            with self._lock:
+                counters = self.hass.data[DOMAIN]["counters"]
+                if matched_name not in counters:
+                    counters[matched_name] = dict(_EMPTY_COUNTERS)
 
-            if record.levelno >= logging.ERROR:
-                counters[matched_name]["error"] += 1
-                counters[matched_name]["last_error"] = msg
+                recent = counters[matched_name]["recent_logs"]
+                recent.insert(0, entry)
+                if len(recent) > self.MAX_RECENT:
+                    del recent[self.MAX_RECENT:]
+
+                if record.levelno >= logging.ERROR:
+                    counters[matched_name]["error"] += 1
+                    counters[matched_name]["last_error"] = msg
+                else:
+                    counters[matched_name]["warning"] += 1
+                    counters[matched_name]["last_warning"] = msg
+        except Exception:
+            self.handleError(record)
+
+    def snapshot(self) -> dict:
+        """Return a thread-safe copy of the current counters."""
+        with self._lock:
+            return copy.deepcopy(self.hass.data[DOMAIN]["counters"])
+
+    def reset(self, logger_name: str | None = None) -> None:
+        """Reset warning and error counters for one or all managed loggers."""
+        with self._lock:
+            counters = self.hass.data[DOMAIN]["counters"]
+            if logger_name:
+                if logger_name in counters:
+                    counters[logger_name] = dict(_EMPTY_COUNTERS)
+                    _LOGGER.info("Reset counters for '%s'.", logger_name)
             else:
-                counters[matched_name]["warning"] += 1
-                counters[matched_name]["last_warning"] = msg
-        except Exception:
-            self.handleError(record)
-
-
-class LogRecordingHandler(logging.Handler):
-    """Buffer log events at each logger's configured level for export."""
-
-    MAX_BUFFER_SIZE = 10000
-
-    def __init__(
-        self,
-        hass: HomeAssistant,
-        logger_names: frozenset,
-        level_overrides: dict[str, str] | None = None,
-    ) -> None:
-        super().__init__(logging.DEBUG)
-        self.hass = hass
-        self.logger_names = logger_names
-        self.buffer = []
-        self.level_overrides = level_overrides or {}
-        self.logger_counts: dict[str, int] = {}
-        self._next_entry_id: int = 0
-
-    def emit(self, record: logging.LogRecord) -> None:
-        try:
-            matched = self._match_logger(record.name)
-            if matched is None:
-                return
-
-            # Check override first, then fall back to stored config.
-            raw_level = self.level_overrides.get(
-                matched,
-                self.hass.data[DOMAIN]["loggers"].get(matched, {}).get("level", "NOTSET"),
-            )
-            min_level = (
-                getattr(logging, raw_level, logging.DEBUG)
-                if raw_level != "NOTSET"
-                else logging.DEBUG
-            )
-            if record.levelno < min_level:
-                return
-
-            entry_id = self._next_entry_id
-            self._next_entry_id += 1
-            entry = {
-                "id": entry_id,
-                "timestamp": record.created,
-                "level": record.levelname,
-                "logger": record.name,
-                "message": record.getMessage(),
-                "source": (
-                    f"{record.pathname}:{record.lineno}"
-                    if record.pathname
-                    else ""
-                ),
-            }
-            self.buffer.append(entry)
-            if len(self.buffer) > self.MAX_BUFFER_SIZE:
-                self.buffer.pop(0)
-            self.logger_counts[matched] = self.logger_counts.get(matched, 0) + 1
-        except Exception:
-            self.handleError(record)
-
-    def _match_logger(self, name: str) -> str | None:
-        if name in self.logger_names:
-            return name
-        for logger_name in self.logger_names:
-            if name.startswith(logger_name + "."):
-                return logger_name
-        return None
+                for name in counters:
+                    counters[name] = dict(_EMPTY_COUNTERS)
+                _LOGGER.info("Reset counters for all loggers.")
 
 
 class LogManagerStore(Store):
@@ -214,17 +178,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data[DOMAIN]["loggers"] = cleaned_loggers
 
-    # Register recording websocket commands.
-    websocket_api.async_register_command(hass, ws_start_recording)
-    websocket_api.async_register_command(hass, ws_stop_recording)
-    websocket_api.async_register_command(hass, ws_recording_status)
-    websocket_api.async_register_command(hass, ws_recording_entries)
-
+    # Register recording websocket commands and initialize the session state.
+    async_register_recording_commands(hass)
     hass.data[DOMAIN]["recording"] = {"status": "none"}
 
     # Initialize warning/error counters for each stored logger.
     hass.data[DOMAIN]["counters"] = {
-        name: {"warning": 0, "error": 0, "last_warning": "", "last_error": "", "recent_logs": []} for name in cleaned_loggers
+        name: dict(_EMPTY_COUNTERS) for name in cleaned_loggers
     }
 
     # Register the counter handler to track warnings and errors for managed loggers.
@@ -280,7 +240,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.warning("Logger path '%s' is already being managed.", logger_name)
             return
 
-        if friendly_name in stored_loggers.values():
+        if friendly_name and friendly_name in (
+            info.get("friendly_name") for info in stored_loggers.values()
+        ):
             _LOGGER.warning("Name '%s' is already in use.", friendly_name)
             return
 
@@ -292,7 +254,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN]["loggers"] = stored_loggers
 
         # Initialize counters for the new logger.
-        hass.data[DOMAIN]["counters"][logger_name] = {"warning": 0, "error": 0, "last_warning": "", "last_error": "", "recent_logs": []}
+        hass.data[DOMAIN]["counters"][logger_name] = dict(_EMPTY_COUNTERS)
 
         await save_data()
 
@@ -343,17 +305,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         Reset warning and error counters for one or all managed loggers.
         """
 
-        logger_name = call.data.get("logger_name")
-        counters = hass.data[DOMAIN]["counters"]
-
-        if logger_name:
-            if logger_name in counters:
-                counters[logger_name] = {"warning": 0, "error": 0, "last_warning": "", "last_error": "", "recent_logs": []}
-                _LOGGER.info("Reset counters for '%s'.", logger_name)
-        else:
-            for name in counters:
-                counters[name] = {"warning": 0, "error": 0, "last_warning": "", "last_error": "", "recent_logs": []}
-            _LOGGER.info("Reset counters for all loggers.")
+        counter_handler = hass.data[DOMAIN]["counter_handler"]
+        counter_handler.reset(call.data.get("logger_name"))
 
     hass.services.async_register(
         DOMAIN,
@@ -377,16 +330,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, ["select"])
 
     if unload_ok:
-        # Stop any active recording session.
-        recording = hass.data[DOMAIN].get("recording", {})
-        if recording.get("status") == "recording":
-            cancel_timer = recording.get("cancel_timer")
-            if cancel_timer:
-                cancel_timer()
-            handler = recording.get("handler")
-            if handler:
-                logging.root.removeHandler(handler)
-        hass.data[DOMAIN].pop("recording", None)
+        # Stop any active recording session and remove its handler.
+        async_stop_recording_session(hass)
 
         # Remove the counter handler from the root logger.
         handler = hass.data[DOMAIN].pop("counter_handler", None)
@@ -419,192 +364,11 @@ async def ws_get_stats(hass: HomeAssistant, connection, msg: dict):
     WebSocket command to retrieve warning and error counters for managed loggers.
     """
 
-    counters = hass.data.get(DOMAIN, {}).get("counters", {})
+    counter_handler = hass.data.get(DOMAIN, {}).get("counter_handler")
+    counters = counter_handler.snapshot() if counter_handler else {}
     _LOGGER.debug("Returning stats for %s loggers.", len(counters))
 
     connection.send_result(msg["id"], counters)
-
-LOG_LEVELS_LIST = ["NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
-
-@websocket_api.websocket_command({
-    vol.Required("type"): f"{DOMAIN}/start_recording",
-    vol.Required("loggers"): vol.All(cv.ensure_list, [cv.string]),
-    vol.Optional("max_duration", default=300): vol.All(
-        vol.Coerce(int), vol.Range(min=10, max=3600)
-    ),
-    vol.Optional("level_overrides", default={}): vol.Schema(
-        {cv.string: vol.In(LOG_LEVELS_LIST)}
-    ),
-})
-@websocket_api.async_response
-async def ws_start_recording(hass: HomeAssistant, connection, msg: dict):
-    """
-    Start recording log events for the specified managed loggers.
-    """
-
-    recording = hass.data[DOMAIN].get("recording", {})
-    if recording.get("status") in ("recording", "completed"):
-        connection.send_error(
-            msg["id"], "already_recording",
-            "A recording session is already active or has unsaved data."
-        )
-        return
-
-    logger_names = set(msg["loggers"])
-    max_duration = msg["max_duration"]
-    level_overrides = msg.get("level_overrides", {})
-
-    # Validate that all requested loggers are managed.
-    managed = hass.data[DOMAIN].get("loggers", {})
-    unknown = logger_names - set(managed.keys())
-    if unknown:
-        connection.send_error(
-            msg["id"], "unknown_logger",
-            f"Unknown loggers: {', '.join(sorted(unknown))}"
-        )
-        return
-
-    handler = LogRecordingHandler(hass, frozenset(logger_names), level_overrides)
-    logging.root.addHandler(handler)
-
-    start_time = time.time()
-
-    def _recording_timeout(now):
-        rec = hass.data[DOMAIN].get("recording", {})
-        if rec.get("status") == "recording":
-            rec["status"] = "completed"
-            h = rec.get("handler")
-            if h:
-                logging.root.removeHandler(h)
-            rec["cancel_timer"] = None
-
-    cancel_timer = async_call_later(hass, max_duration, _recording_timeout)
-
-    hass.data[DOMAIN]["recording"] = {
-        "handler": handler,
-        "start_time": start_time,
-        "status": "recording",
-        "cancel_timer": cancel_timer,
-        "max_duration": max_duration,
-        "loggers": logger_names,
-    }
-
-    _LOGGER.info(
-        "Started recording %s loggers for max %s seconds.",
-        len(logger_names), max_duration
-    )
-
-    connection.send_result(msg["id"], {
-        "status": "recording",
-        "max_duration": max_duration,
-    })
-
-
-@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/stop_recording"})
-@websocket_api.async_response
-async def ws_stop_recording(hass: HomeAssistant, connection, msg: dict):
-    """
-    Stop recording and return buffered logs.
-    """
-
-    recording = hass.data[DOMAIN].get("recording", {})
-    if recording.get("status") not in ("recording", "completed"):
-        connection.send_error(
-            msg["id"], "not_recording",
-            "No recording session is active."
-        )
-        return
-
-    # Cancel the timeout timer if still pending.
-    cancel_timer = recording.get("cancel_timer")
-    if cancel_timer:
-        cancel_timer()
-
-    handler = recording.get("handler")
-    if handler:
-        logging.root.removeHandler(handler)
-
-    buffer = list(handler.buffer) if handler else []
-    duration = time.time() - recording.get("start_time", time.time())
-    log_count = len(buffer)
-
-    # Reset recording state.
-    hass.data[DOMAIN]["recording"] = {"status": "none"}
-
-    _LOGGER.info(
-        "Stopped recording after %.1f seconds, %s entries.",
-        duration, log_count
-    )
-
-    connection.send_result(msg["id"], {
-        "logs": buffer,
-        "duration": round(duration, 1),
-        "log_count": log_count,
-        "status": "completed",
-    })
-
-
-@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/recording_status"})
-@websocket_api.async_response
-async def ws_recording_status(hass: HomeAssistant, connection, msg: dict):
-    """
-    Return the current recording status for the frontend to poll.
-    """
-
-    recording = hass.data[DOMAIN].get("recording", {})
-    status = recording.get("status", "none")
-
-    result = {"status": status}
-    if status != "none":
-        result["elapsed"] = round(
-            time.time() - recording.get("start_time", time.time()), 1
-        )
-        handler = recording.get("handler")
-        result["log_count"] = len(handler.buffer) if handler else 0
-        result["max_duration"] = recording.get("max_duration", 300)
-        result["loggers"] = list(recording.get("loggers", []))
-        result["logger_counts"] = handler.logger_counts if handler else {}
-
-    connection.send_result(msg["id"], result)
-
-
-@websocket_api.websocket_command({
-    vol.Required("type"): f"{DOMAIN}/recording_entries",
-    vol.Optional("after_id", default=0): int,
-})
-@websocket_api.async_response
-async def ws_recording_entries(hass: HomeAssistant, connection, msg: dict):
-    """
-    Return recorded log entries newer than after_id.
-    Used by the live view to poll incrementally.
-    """
-
-    recording = hass.data[DOMAIN].get("recording", {})
-    if recording.get("status") not in ("recording", "completed"):
-        connection.send_result(msg["id"], {"entries": [], "next_id": 0})
-        return
-
-    handler = recording.get("handler")
-    if not handler:
-        connection.send_result(msg["id"], {"entries": [], "next_id": 0})
-        return
-
-    after_id = msg["after_id"]
-    # Buffer is oldest-first. Scan from end for efficiency.
-    result_entries = []
-    for entry in reversed(handler.buffer):
-        if entry["id"] <= after_id:
-            break
-        result_entries.append(entry)
-    result_entries.reverse()
-
-    next_id = handler._next_entry_id
-
-    connection.send_result(msg["id"], {
-        "entries": result_entries,
-        "next_id": next_id,
-    })
-
 
 async def async_register_lovelace_resource(hass: HomeAssistant) -> None:
     """

@@ -40,6 +40,25 @@ async def test_async_setup_entry_initializes_domain_data(hass: HomeAssistant):
     assert "recording" in hass.data[DOMAIN]
 
 
+async def test_async_unload_entry_removes_handlers_and_data(hass):
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    counter_handler = hass.data[DOMAIN]["counter_handler"]
+    assert counter_handler in logging.root.handlers
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert counter_handler not in logging.root.handlers
+    assert "loggers" not in hass.data[DOMAIN]
+    assert "counters" not in hass.data[DOMAIN]
+    assert "recording" not in hass.data[DOMAIN]
+
+
 async def test_async_setup_entry_restores_stored_loggers_and_levels(hass):
     store_data = {
         "loggers": {

@@ -8,10 +8,10 @@ from custom_components.log_manager import (
     STORAGE_KEY,
     STORAGE_VERSION,
     LogCounterHandler,
-    LogRecordingHandler,
     LogManagerStore,
     async_register_lovelace_resource,
 )
+from custom_components.log_manager.recording import LogRecordingHandler
 
 
 class TestLogCounterHandler:
