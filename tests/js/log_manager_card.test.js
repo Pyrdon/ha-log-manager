@@ -299,4 +299,355 @@ describe("LogManagerCard", () => {
       expect(row.querySelector(".recording-count-badge")).toBeNull();
     });
   });
+
+  describe("recording flow", () => {
+    let rec;
+
+    // Give a fresh card instance the minimal recording UI elements the real
+    // _updateRecordingUI() touches.
+    const stubRecordingUI = (c) => {
+      c._recordIcon = { setAttribute: jest.fn() };
+      c._recordBtn = { classList: { add: jest.fn(), remove: jest.fn() } };
+      c._recordText = { textContent: "" };
+      c._liveBtn = { style: { display: "" } };
+      c._recordingCounts = {};
+      c._recordingState = null;
+      c._recordingLoggers = [];
+      c._recordingBuffer = [];
+      c._recordingLevelOverrides = {};
+    };
+
+    beforeEach(() => {
+      rec = document.createElement("log-manager-card");
+      stubRecordingUI(rec);
+      rec._hass = { connection: { sendMessagePromise: jest.fn() } };
+    });
+
+    afterEach(() => {
+      rec._cleanupRecordingIntervals();
+      rec._cleanupLivePolling();
+    });
+
+    test("_startRecording sends the command and adopts max_duration on success", async () => {
+      rec._hass.connection.sendMessagePromise.mockResolvedValueOnce({
+        status: "recording",
+        max_duration: 120,
+      });
+      rec._startRecording(["rec.logger"], { "rec.logger": "DEBUG" });
+      await Promise.resolve();
+
+      expect(rec._recordingState).toBe("recording");
+      expect(rec._recordingLoggers).toEqual(["rec.logger"]);
+      expect(rec._recordingLevelOverrides).toEqual({ "rec.logger": "DEBUG" });
+      expect(rec._recordingMaxDuration).toBe(120);
+      expect(rec._hass.connection.sendMessagePromise).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "log_manager/start_recording",
+          loggers: ["rec.logger"],
+        })
+      );
+    });
+
+    test("_startRecording resets state on failure", async () => {
+      let rejectCommand;
+      rec._hass.connection.sendMessagePromise.mockImplementation(
+        () => new Promise((_, reject) => { rejectCommand = reject; })
+      );
+      rec._startRecording(["rec.logger"], {});
+      rejectCommand(new Error("boom"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(rec._recordingState).toBeNull();
+      expect(rec._recordingCounts).toEqual({});
+    });
+
+    test("_stopRecording fetches the buffer and shows results", async () => {
+      rec._showRecordingResults = jest.fn();
+      rec._hass.connection.sendMessagePromise.mockResolvedValueOnce({
+        logs: [{ id: 0, timestamp: 1, level: "INFO", logger: "rec.logger", message: "hi" }],
+        duration: 2.0,
+        log_count: 1,
+        status: "completed",
+      });
+      rec._stopRecording();
+      await Promise.resolve();
+
+      expect(rec._recordingState).toBe("results");
+      expect(rec._recordingBuffer).toHaveLength(1);
+      expect(rec._recordingDuration).toBe(2.0);
+      expect(rec._showRecordingResults).toHaveBeenCalledTimes(1);
+    });
+
+    test("_pollRecordingStatus transitions to completed and fetches results when live view is open", async () => {
+      rec._recordingState = "recording";
+      rec._liveViewOpen = true;
+      rec._fetchResults = jest.fn();
+      rec._cleanupRecordingIntervals = jest.fn();
+      rec._cleanupLivePolling = jest.fn();
+      rec._updateRecordingUI = jest.fn();
+      rec._hass.connection.sendMessagePromise.mockResolvedValueOnce({
+        status: "completed",
+        log_count: 5,
+        elapsed: 10,
+        max_duration: 300,
+        logger_counts: { "rec.logger": 5 },
+      });
+      rec._pollRecordingStatus();
+      await Promise.resolve();
+
+      expect(rec._recordingState).toBe("completed");
+      expect(rec._recordingLogCount).toBe(5);
+      expect(rec._fetchResults).toHaveBeenCalledTimes(1);
+    });
+
+    test("_pollRecordingEntries appends new entries and advances next_id", async () => {
+      rec._recordingState = "recording";
+      rec._liveLastId = 0;
+      rec._recordingBuffer = [];
+      rec._livePreview = {
+        appendChild: jest.fn(),
+        scrollHeight: 0,
+        scrollTop: 0,
+        clientHeight: 0,
+      };
+      rec._liveLevelFilter = { value: "ALL" };
+      rec._liveLoggerFilter = { value: "" };
+      rec._updateLiveSummary = jest.fn();
+      rec._hass.connection.sendMessagePromise.mockResolvedValueOnce({
+        entries: [
+          { id: 0, timestamp: 1, level: "INFO", logger: "rec.logger", message: "one" },
+          { id: 1, timestamp: 2, level: "WARNING", logger: "rec.logger", message: "two" },
+        ],
+        next_id: 2,
+      });
+      rec._pollRecordingEntries();
+      await Promise.resolve();
+
+      expect(rec._recordingBuffer).toHaveLength(2);
+      expect(rec._liveLastId).toBe(2);
+      expect(rec._livePreview.appendChild).toHaveBeenCalledTimes(2);
+    });
+
+    test("_pollRecordingEntries does not re-append entries already seen", async () => {
+      rec._recordingState = "recording";
+      rec._liveLastId = 2;
+      rec._recordingBuffer = [];
+      rec._livePreview = {
+        appendChild: jest.fn(),
+        scrollHeight: 0,
+        scrollTop: 0,
+        clientHeight: 0,
+      };
+      rec._liveLevelFilter = { value: "ALL" };
+      rec._liveLoggerFilter = { value: "" };
+      rec._updateLiveSummary = jest.fn();
+      rec._hass.connection.sendMessagePromise.mockResolvedValueOnce({
+        entries: [],
+        next_id: 2,
+      });
+      rec._pollRecordingEntries();
+      await Promise.resolve();
+
+      expect(rec._livePreview.appendChild).not.toHaveBeenCalled();
+      expect(rec._liveLastId).toBe(2);
+    });
+
+    test("_entryMatchesFilter filters by level threshold", () => {
+      const entry = { logger: "rec.logger", level: "WARNING" };
+      expect(cardInstance._entryMatchesFilter(entry, "ALL", "")).toBe(true);
+      expect(cardInstance._entryMatchesFilter(entry, "WARNING", "")).toBe(true);
+      expect(cardInstance._entryMatchesFilter(entry, "ERROR", "")).toBe(false);
+    });
+
+    test("_entryMatchesFilter matches child loggers for a logger filter", () => {
+      const entry = { logger: "rec.logger.child", level: "INFO" };
+      expect(cardInstance._entryMatchesFilter(entry, "ALL", "rec.logger")).toBe(true);
+      expect(cardInstance._entryMatchesFilter(entry, "ALL", "other.logger")).toBe(false);
+    });
+  });
+
+  describe("_updateBadgesInPlace", () => {
+    let row;
+
+    beforeEach(() => {
+      cardInstance._counters = {};
+      row = document.createElement("div");
+      row.innerHTML = `
+        <div class="log-controls-wrapper">
+          <div class="counter-badges">
+            <span class="counter-badge warning-badge">&#9888; 2</span>
+          </div>
+          <div class="log-controls"></div>
+        </div>
+      `;
+    });
+
+    test("updates an existing badge in place without recreating the element", () => {
+      const badge = row.querySelector(".warning-badge");
+      cardInstance._counters = { "t.logger": { warning: 5, error: 0 } };
+      cardInstance._updateBadgesInPlace(row, "t.logger");
+
+      const updated = row.querySelector(".warning-badge");
+      expect(updated).toBe(badge);
+      expect(updated.textContent).toContain("5");
+    });
+
+    test("removes badge and container when all counts drop to zero", () => {
+      cardInstance._counters = { "t.logger": { warning: 0, error: 0 } };
+      cardInstance._updateBadgesInPlace(row, "t.logger");
+
+      expect(row.querySelector(".warning-badge")).toBeNull();
+      expect(row.querySelector(".counter-badges")).toBeNull();
+    });
+
+    test("creates an error badge when only errors are present", () => {
+      cardInstance._counters = { "t.logger": { warning: 0, error: 3 } };
+      cardInstance._updateBadgesInPlace(row, "t.logger");
+
+      const badge = row.querySelector(".error-badge");
+      expect(badge).not.toBeNull();
+      expect(badge.textContent).toContain("3");
+    });
+
+    test("updates badge text via textContent, not HTML entities", () => {
+      cardInstance._counters = { "t.logger": { warning: 7, error: 0 } };
+      cardInstance._updateBadgesInPlace(row, "t.logger");
+
+      const badge = row.querySelector(".warning-badge");
+      expect(badge.textContent).toBe("\u26A0 7");
+      expect(badge.textContent).not.toContain("&#9888;");
+    });
+  });
+
+  describe("_openRecordingSetup", () => {
+    let rec;
+
+    beforeEach(() => {
+      rec = document.createElement("log-manager-card");
+      rec._hass = {
+        states: {
+          "select.test_logger": {
+            attributes: {
+              logger_name: "test.logger",
+              friendly_name: "Test Logger",
+            },
+            state: "NOTSET",
+          },
+        },
+      };
+      rec._loggerChecklist = document.createElement("div");
+      rec._recordingSetupDialog = document.createElement("div");
+      rec._recordingSetupStart = { disabled: false };
+    });
+
+    test("offers NOTSET and preselects it for a NOTSET logger", () => {
+      rec._openRecordingSetup();
+
+      const options = Array.from(
+        rec._loggerChecklist.querySelectorAll(".recording-level-select option")
+      ).map((o) => o.value);
+      expect(options).toContain("NOTSET");
+
+      const select = rec._loggerChecklist.querySelector(".recording-level-select");
+      expect(select.value).toBe("NOTSET");
+    });
+
+    test("preselects the current level for a non-NOTSET logger", () => {
+      rec._hass.states["select.test_logger"].state = "WARNING";
+      rec._openRecordingSetup();
+
+      const select = rec._loggerChecklist.querySelector(".recording-level-select");
+      expect(select.value).toBe("WARNING");
+    });
+  });
+
+  describe("recording export", () => {
+    let rec;
+    let origCreate;
+    let origRevoke;
+    let origBlob;
+    let blobArgs;
+
+    beforeEach(() => {
+      rec = document.createElement("log-manager-card");
+      rec._recordingBuffer = [
+        {
+          timestamp: 0,
+          level: "INFO",
+          logger: "rec.logger",
+          message: "hello world",
+          source: "/code/app.py:42",
+        },
+      ];
+      origCreate = URL.createObjectURL;
+      origRevoke = URL.revokeObjectURL;
+      origBlob = global.Blob;
+      blobArgs = null;
+      URL.createObjectURL = jest.fn(() => "blob:mock");
+      URL.revokeObjectURL = jest.fn();
+      global.Blob = function (parts, opts) {
+        blobArgs = { parts, opts };
+      };
+    });
+
+    afterEach(() => {
+      URL.createObjectURL = origCreate;
+      URL.revokeObjectURL = origRevoke;
+      global.Blob = origBlob;
+      navigator.clipboard = undefined;
+    });
+
+    test("_downloadLogs builds a plain-text .log file", () => {
+      let clicked = null;
+      const clickSpy = jest
+        .spyOn(HTMLAnchorElement.prototype, "click")
+        .mockImplementation(function () {
+          clicked = { download: this.download, href: this.href };
+        });
+      try {
+        rec._downloadLogs("plain");
+      } finally {
+        clickSpy.mockRestore();
+      }
+
+      expect(clicked.download).toMatch(/\.log$/);
+      expect(clicked.href).toBe("blob:mock");
+      expect(blobArgs.parts[0]).toContain("INFO");
+      expect(blobArgs.parts[0]).toContain("rec.logger");
+      expect(blobArgs.parts[0]).toContain("hello world");
+    });
+
+    test("_downloadLogs builds a JSONL file", () => {
+      let clicked = null;
+      const clickSpy = jest
+        .spyOn(HTMLAnchorElement.prototype, "click")
+        .mockImplementation(function () {
+          clicked = { download: this.download, href: this.href };
+        });
+      try {
+        rec._downloadLogs("jsonl");
+      } finally {
+        clickSpy.mockRestore();
+      }
+
+      expect(clicked.download).toMatch(/\.jsonl$/);
+      expect(blobArgs.parts[0]).toContain('"level":"INFO"');
+      expect(blobArgs.parts[0]).toContain('"message":"hello world"');
+    });
+
+    test("_copyLogsToClipboard writes formatted text and shows confirmation", async () => {
+      rec._liveCopyBtn = { textContent: "Copy to clipboard" };
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText: jest.fn().mockResolvedValue(undefined) },
+      });
+      await rec._copyLogsToClipboard();
+
+      const text = navigator.clipboard.writeText.mock.calls[0][0];
+      expect(text).toContain("INFO");
+      expect(text).toContain("rec.logger");
+      expect(text).toContain("hello world");
+      expect(rec._liveCopyBtn.textContent).toBe("Copied!");
+    });
+  });
 });

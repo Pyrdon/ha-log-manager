@@ -266,7 +266,7 @@ class LogManagerCard extends HTMLElement {
         let badge = badgesContainer ? badgesContainer.querySelector(`.${cls}`) : null;
         if (badge) {
           // Update existing badge in-place — DOM stays alive, tooltip survives.
-          badge.innerHTML = `${icon} ${count}`;
+          badge.textContent = `${icon} ${count}`;
           badge.setAttribute("title", title);
         } else {
           // Create badge element.
@@ -280,7 +280,7 @@ class LogManagerCard extends HTMLElement {
           badge.className = `counter-badge ${cls}`;
           badge.title = title;
           badge.dataset.logger = loggerName;
-          badge.innerHTML = `${icon} ${count}`;
+          badge.textContent = `${icon} ${count}`;
           badge.addEventListener("click", (e) => {
             e.stopPropagation();
             this._toggleExpand(loggerName);
@@ -288,11 +288,10 @@ class LogManagerCard extends HTMLElement {
           badgesContainer.appendChild(badge);
         }
       }
-      return null; // not used
     };
 
-    upsertBadge("warning-badge", warningCount, "&#9888;", "warning");
-    upsertBadge("error-badge", errorCount, "&#10005;", "error");
+    upsertBadge("warning-badge", warningCount, "\u26A0", "warning");
+    upsertBadge("error-badge", errorCount, "\u2715", "error");
 
     // Remove badges that should no longer exist.
     if (badgesContainer) {
@@ -1523,9 +1522,9 @@ select.level-select {
 
         row.innerHTML = `
           <div class="log-name ${isUnavailable ? "unavailable" : ""}">
-            <div style="font-weight: 500;">${recordingTag}${displayName}</div>
+            <div style="font-weight: 500;">${recordingTag}${this._escapeHtml(displayName)}</div>
             <div style="color: var(--secondary-text-color); font-size: 12px; margin-top: 2px;">
-              ${actualLoggerName}
+              ${this._escapeHtml(actualLoggerName)}
             </div>
           </div>
           <div class="log-controls-wrapper">
@@ -1740,7 +1739,7 @@ select.level-select {
   // --- Recording methods ---
 
   _openRecordingSetup() {
-    const LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"];
+    const LOG_LEVELS = ["NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"];
     const managed = Object.entries(this._hass.states)
       .filter(([eid]) => eid.startsWith("select."))
       .filter(([, s]) => s.attributes.logger_name)
@@ -1956,8 +1955,6 @@ select.level-select {
     this._livePauseBtn.style.display = "";
     this._liveStopBtn.style.display = "";
     this._livePaused = false;
-    this._livePausedDuration = 0;
-    this._livePauseStartTime = 0;
     this._liveLastId = 0;
     this._livePreview.innerHTML = "";
     this._liveLoggerFilter.innerHTML = "";
@@ -2146,8 +2143,6 @@ select.level-select {
   _openLiveView() {
     this._liveViewOpen = true;
     this._livePaused = false;
-    this._livePausedDuration = 0;
-    this._livePauseStartTime = 0;
     this._liveLastId = 0;
     this._recordingBuffer = [];
 
@@ -2298,13 +2293,7 @@ select.level-select {
   _togglePauseLive() {
     this._livePaused = !this._livePaused;
     this._livePauseBtn.textContent = this._livePaused ? "Resume" : "Pause";
-    if (this._livePaused) {
-      this._livePauseStartTime = Date.now();
-    } else {
-      if (this._livePauseStartTime) {
-        this._livePausedDuration += Date.now() - this._livePauseStartTime;
-        this._livePauseStartTime = 0;
-      }
+    if (!this._livePaused) {
       this._pollRecordingEntries();
     }
   }
