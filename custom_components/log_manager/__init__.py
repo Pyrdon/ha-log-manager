@@ -22,13 +22,21 @@ from .recording import (
 
 _LOGGER = logging.getLogger(__name__)
 
-_EMPTY_COUNTERS = {
-    "warning": 0,
-    "error": 0,
-    "last_warning": "",
-    "last_error": "",
-    "recent_logs": [],
-}
+
+def _empty_counters() -> dict:
+    """Return a fresh warning/error counter dict.
+
+    Must return a new ``recent_logs`` list on every call — the list is mutated
+    in place by ``LogCounterHandler.emit`` and a shallow copy would be shared
+    across all managed loggers.
+    """
+    return {
+        "warning": 0,
+        "error": 0,
+        "last_warning": "",
+        "last_error": "",
+        "recent_logs": [],
+    }
 
 
 class LogCounterHandler(logging.Handler):
@@ -81,7 +89,7 @@ class LogCounterHandler(logging.Handler):
             with self._lock:
                 counters = self.hass.data[DOMAIN]["counters"]
                 if matched_name not in counters:
-                    counters[matched_name] = dict(_EMPTY_COUNTERS)
+                    counters[matched_name] = _empty_counters()
 
                 recent = counters[matched_name]["recent_logs"]
                 recent.insert(0, entry)
@@ -108,11 +116,11 @@ class LogCounterHandler(logging.Handler):
             counters = self.hass.data[DOMAIN]["counters"]
             if logger_name:
                 if logger_name in counters:
-                    counters[logger_name] = dict(_EMPTY_COUNTERS)
+                    counters[logger_name] = _empty_counters()
                     _LOGGER.info("Reset counters for '%s'.", logger_name)
             else:
                 for name in counters:
-                    counters[name] = dict(_EMPTY_COUNTERS)
+                    counters[name] = _empty_counters()
                 _LOGGER.info("Reset counters for all loggers.")
 
 
@@ -184,7 +192,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Initialize warning/error counters for each stored logger.
     hass.data[DOMAIN]["counters"] = {
-        name: dict(_EMPTY_COUNTERS) for name in cleaned_loggers
+        name: _empty_counters() for name in cleaned_loggers
     }
 
     # Register the counter handler to track warnings and errors for managed loggers.
@@ -254,7 +262,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN]["loggers"] = stored_loggers
 
         # Initialize counters for the new logger.
-        hass.data[DOMAIN]["counters"][logger_name] = dict(_EMPTY_COUNTERS)
+        hass.data[DOMAIN]["counters"][logger_name] = _empty_counters()
 
         await save_data()
 

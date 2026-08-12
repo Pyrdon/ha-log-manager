@@ -130,6 +130,41 @@ class TestLogCounterHandler:
         assert counters["last_error"] == "third"
         assert counters["error"] == 3
 
+    def test_emit_keeps_recent_logs_isolated_per_logger(self, hass):
+        handler, _ = self._handler_and_hass(hass)
+        handler.emit(self._make_record("exact_logger", logging.WARNING, msg="exact msg"))
+        handler.emit(self._make_record("parent_logger", logging.WARNING, msg="parent msg"))
+
+        counters = hass.data[DOMAIN]["counters"]
+        assert [e["message"] for e in counters["exact_logger"]["recent_logs"]] == ["exact msg"]
+        assert [e["message"] for e in counters["parent_logger"]["recent_logs"]] == ["parent msg"]
+
+    def test_reset_clears_recent_logs(self, hass):
+        handler, _ = self._handler_and_hass(hass)
+        handler.emit(self._make_record("exact_logger", logging.WARNING, msg="stale"))
+
+        handler.reset("exact_logger")
+
+        counters = hass.data[DOMAIN]["counters"]["exact_logger"]
+        assert counters["warning"] == 0
+        assert counters["recent_logs"] == []
+
+    def test_emit_attributes_to_most_specific_parent(self, hass):
+        hass.data[DOMAIN] = {
+            "loggers": {
+                "a": {"friendly_name": "A", "level": "NOTSET"},
+                "a.b": {"friendly_name": "AB", "level": "NOTSET"},
+            },
+            "counters": {},
+        }
+        handler = LogCounterHandler(hass)
+        handler.emit(self._make_record("a.b.c", logging.WARNING, msg="deep"))
+
+        counters = hass.data[DOMAIN]["counters"]
+        assert "a.b" in counters
+        assert "a" not in counters
+        assert counters["a.b"]["warning"] == 1
+
 
 class TestLogRecordingHandler:
     @staticmethod
