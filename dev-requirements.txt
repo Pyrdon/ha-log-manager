@@ -2,3 +2,6 @@ pytest
 pytest-asyncio
 pytest-homeassistant-custom-component
 pytest-cov
+# Pin josepy below 2.x: acme 2.8.0 references jose.ComparableX509, which josepy 2.x
+# removed. The websocket test client (hass_ws_client) cannot connect otherwise.
+josepy<2
