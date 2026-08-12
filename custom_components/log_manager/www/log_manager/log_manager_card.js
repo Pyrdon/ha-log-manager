@@ -113,7 +113,7 @@ class LogManagerCard extends HTMLElement {
     return `
       <div class="log-panel">
         <div class="log-entries">${entriesHtml}</div>
-        <div class="log-disclaimer">Only WARNING and above are captured, regardless of configured level.</div>
+        <div class="log-disclaimer" title="This panel is fed by the counter badges, which capture WARNING and above for every logger regardless of its configured level. It does not affect or reflect recording.">This panel shows only WARNING and above, independent of the configured level.</div>
         <div style="display: flex; gap: 8px; margin-top: 8px;">
           <button class="reset-btn" data-logger="${this._escapeAttr(loggerName)}"${hasCounters ? "" : " disabled"}>
             <ha-icon icon="mdi:refresh" style="--mdi-icon-size: 14px;"></ha-icon>
@@ -314,7 +314,7 @@ class LogManagerCard extends HTMLElement {
   _showDeleteConfirm(displayName, onConfirm) {
     this._deleteConfirmTarget = { displayName, onConfirm };
     this._deleteDialog.querySelector(".delete-dialog-message").textContent =
-      `Remove logger "${displayName}"? This cannot be undone.`;
+      `Remove logger "${displayName}"?`;
     this._deleteDialog.style.display = "flex";
   }
 
@@ -1121,13 +1121,13 @@ select.level-select {
             <span id="live-status-text" style="font-weight: 500;">Recording</span>
             <span id="live-timer" style="font-family: monospace; font-size: 14px;"></span>
             <span style="flex: 1;"></span>
-            <button class="btn-secondary" id="live-pause-btn" style="padding: 4px 12px; font-size: 13px;">Pause</button>
-            <button class="btn-danger" id="live-stop-btn" style="padding: 4px 12px; font-size: 13px;">Stop</button>
+            <button class="btn-secondary" id="live-pause-btn" title="Pause viewer update" style="padding: 4px 12px; font-size: 13px;">Pause</button>
+            <button class="btn-danger" id="live-stop-btn" title="Stop recording" style="padding: 4px 12px; font-size: 13px;">Stop</button>
           </div>
 
           <div id="live-filter-bar" style="display: flex; gap: 8px; margin-bottom: 8px;">
-            <select id="live-logger-filter" style="flex: 1; padding: 4px 6px; border-radius: 4px; border: 1px solid var(--divider-color); background: var(--card-background-color); color: var(--primary-text-color); font-size: 13px;"></select>
-            <select id="live-level-filter" style="padding: 4px 6px; border-radius: 4px; border: 1px solid var(--divider-color); background: var(--card-background-color); color: var(--primary-text-color); font-size: 13px;">
+            <select id="live-logger-filter" title="Filter the live view by logger" style="flex: 1; padding: 4px 6px; border-radius: 4px; border: 1px solid var(--divider-color); background: var(--card-background-color); color: var(--primary-text-color); font-size: 13px;"></select>
+            <select id="live-level-filter" title="Filter the live view by minimum level" style="padding: 4px 6px; border-radius: 4px; border: 1px solid var(--divider-color); background: var(--card-background-color); color: var(--primary-text-color); font-size: 13px;">
               <option value="ALL">All levels</option>
               <option value="DEBUG">DEBUG+</option>
               <option value="INFO">INFO+</option>
@@ -1143,9 +1143,9 @@ select.level-select {
 
           <div class="dialog-actions" id="live-export-actions">
             <button class="btn-secondary" id="live-save-plain-btn" disabled>Save as .log</button>
-            <button class="btn-secondary" id="live-save-jsonl-btn" disabled>Save as .jsonl</button>
+            <button class="btn-secondary" id="live-save-jsonl-btn" disabled title="JSON Lines — one JSON object per line (timestamp, level, logger, message, source); easy to process programmatically.">Save as JSONL</button>
             <button class="btn-secondary" id="live-copy-btn" disabled style="margin-right: auto;">Copy to clipboard</button>
-            <button class="btn-secondary" id="live-close-btn">Close</button>
+            <button class="btn-secondary" id="live-close-btn" title="Close this window; the recording continues in the background.">Close &amp; Keep Recording</button>
           </div>
         </div>
       </div>
@@ -1761,7 +1761,7 @@ select.level-select {
       html += `<label class="checklist-item" style="background: ${colors.rowBg};">
         <input type="checkbox" data-logger="${this._escapeAttr(loggerName)}">
         <span class="logger-label">${this._escapeHtml(friendlyName)}</span>
-        <select class="recording-level-select" disabled style="color: ${colors.color}; background: ${colors.bg};">${levelOpts}</select>
+        <select class="recording-level-select" title="Recording level for this logger" disabled style="color: ${colors.color}; background: ${colors.bg};">${levelOpts}</select>
       </label>`;
     });
 
@@ -1908,6 +1908,8 @@ select.level-select {
     this._liveStatusText.parentElement.style.display = "none";
     this._livePauseBtn.style.display = "none";
     this._liveStopBtn.style.display = "none";
+    this._liveCloseBtn.textContent = "Close";
+    this._liveCloseBtn.title = "Data is only available while this view is open.";
 
     this._liveSavePlainBtn.disabled = !hasEntries;
     this._liveSaveJsonlBtn.disabled = !hasEntries;
@@ -2167,7 +2169,10 @@ select.level-select {
     this._liveStatusText.parentElement.style.display = "flex";
     this._livePauseBtn.style.display = "";
     this._livePauseBtn.textContent = "Pause";
+    this._livePauseBtn.title = "Pause viewer update";
     this._liveStopBtn.style.display = "";
+    this._liveCloseBtn.textContent = "Close & Keep Recording";
+    this._liveCloseBtn.title = "Close this window; the recording continues in the background.";
     this._liveSavePlainBtn.disabled = true;
     this._liveSaveJsonlBtn.disabled = true;
     this._liveCopyBtn.disabled = true;
