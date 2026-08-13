@@ -197,7 +197,7 @@ async def ws_start_recording(hass: HomeAssistant, connection, msg: dict):
         "status": "recording",
         "cancel_timer": cancel_timer,
         "max_duration": max_duration,
-        "loggers": logger_names,
+        "loggers": sorted(logger_names),
     }
 
     _LOGGER.info(
