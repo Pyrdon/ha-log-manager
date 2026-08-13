@@ -4,10 +4,9 @@ import logging
 from homeassistant.components.select import SelectEntity
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
-from . import DOMAIN
+from .const import DOMAIN, LOG_LEVELS_LIST as LOG_LEVELS
 
 _LOGGER = logging.getLogger(__name__)
-LOG_LEVELS = ["NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
 async def async_setup_entry(hass, entry, async_add_entities):
     """
