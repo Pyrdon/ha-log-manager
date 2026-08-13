@@ -219,3 +219,71 @@ async def test_reset_all_counters(hass):
     counters = hass.data[DOMAIN]["counters"]
     assert counters["logger.a"]["warning"] == 0
     assert counters["logger.b"]["error"] == 0
+
+
+async def test_ws_get_loggers_returns_sorted_loggers(hass, hass_ws_client):
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    logging.getLogger("zeta.test.logger")
+    logging.getLogger("alpha.test.logger")
+
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id({"type": f"{DOMAIN}/get_loggers"})
+    result = await client.receive_json()
+
+    assert result["success"] is True
+    loggers = result["result"]
+    assert loggers == sorted(loggers)
+    assert "alpha.test.logger" in loggers
+    assert "zeta.test.logger" in loggers
+
+
+async def test_ws_get_stats_returns_counters(hass, hass_ws_client):
+    store_data = {
+        "loggers": {
+            "stats.logger": {"friendly_name": "Stats", "level": "NOTSET"},
+        }
+    }
+    with patch(
+        "custom_components.log_manager.LogManagerStore.async_load",
+    ) as mock_load:
+        mock_load.return_value = store_data
+        entry = MockConfigEntry(domain=DOMAIN, data={})
+        entry.add_to_hass(hass)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    handler = hass.data[DOMAIN]["counter_handler"]
+    handler.emit(logging.LogRecord(
+        "stats.logger", logging.WARNING, "test.py", 1, "boom", (), None
+    ))
+
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id({"type": f"{DOMAIN}/get_stats"})
+    result = await client.receive_json()
+
+    assert result["success"] is True
+    counters = result["result"]
+    assert counters["stats.logger"]["warning"] == 1
+    assert counters["stats.logger"]["recent_logs"][0]["message"] == "boom"
+
+
+async def test_ws_get_stats_after_unload_returns_empty(hass, hass_ws_client):
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    client = await hass_ws_client(hass)
+
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    await client.send_json_auto_id({"type": f"{DOMAIN}/get_stats"})
+    result = await client.receive_json()
+
+    assert result["success"] is True
+    assert result["result"] == {}
