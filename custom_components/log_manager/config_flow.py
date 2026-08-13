@@ -20,7 +20,7 @@ class LogManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         Handle the initial setup step initiated by the user.
         """
 
-        _LOGGER.warning("Config flow: async_step_user triggered.")
+        _LOGGER.debug("Config flow: async_step_user triggered.")
 
         if self._async_current_entries():
             return self.async_abort(reason="single_instance_allowed")

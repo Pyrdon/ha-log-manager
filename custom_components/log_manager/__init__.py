@@ -350,7 +350,7 @@ async def ws_get_loggers(hass: HomeAssistant, connection, msg: dict):
     # Retrieve all instantiated logger names from the root manager.
     loggers = list(logging.root.manager.loggerDict.keys())
     loggers.sort()
-    _LOGGER.info("Returning list of %s loggers.", len(loggers))
+    _LOGGER.debug("Returning list of %s loggers.", len(loggers))
 
     connection.send_result(msg["id"], loggers)
 
