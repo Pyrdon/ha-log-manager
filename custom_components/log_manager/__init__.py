@@ -14,7 +14,7 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.storage import Store
 
-from .const import DOMAIN, STORAGE_KEY, STORAGE_VERSION
+from .const import DOMAIN, STORAGE_KEY, STORAGE_VERSION, match_managed_logger
 from .recording import (
     async_register_recording_commands,
     async_stop_recording_session,
@@ -58,18 +58,7 @@ class LogCounterHandler(logging.Handler):
             # Match the record against managed loggers, including child loggers.
             # e.g. "custom_components.voice_satellite.sensor" matches
             # the managed logger "custom_components.voice_satellite".
-            # When several managed loggers are parents of the record's logger,
-            # attribute it to the most specific one.
-            matched_name = None
-            if record.name in loggers:
-                matched_name = record.name
-            else:
-                matches = [
-                    name for name in loggers
-                    if record.name.startswith(name + ".")
-                ]
-                if matches:
-                    matched_name = max(matches, key=len)
+            matched_name = match_managed_logger(record.name, loggers)
 
             if matched_name is None:
                 return

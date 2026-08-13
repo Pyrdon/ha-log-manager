@@ -16,7 +16,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_call_later
 
-from .const import DOMAIN, LOG_LEVELS_LIST
+from .const import DOMAIN, LOG_LEVELS_LIST, match_managed_logger
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -82,16 +82,7 @@ class LogRecordingHandler(logging.Handler):
             self.handleError(record)
 
     def _match_logger(self, name: str) -> str | None:
-        if name in self.logger_names:
-            return name
-        matches = [
-            logger_name
-            for logger_name in self.logger_names
-            if name.startswith(logger_name + ".")
-        ]
-        if not matches:
-            return None
-        return max(matches, key=len)
+        return match_managed_logger(name, self.logger_names)
 
     def snapshot(self) -> list[dict]:
         """Return a thread-safe copy of the buffered entries (oldest first)."""
