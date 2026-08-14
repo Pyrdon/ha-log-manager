@@ -650,4 +650,106 @@ describe("LogManagerCard", () => {
       expect(rec._liveCopyBtn.textContent).toBe("Copied!");
     });
   });
+
+  describe("_updateLiveSummary", () => {
+    let rec;
+
+    beforeEach(() => {
+      rec = document.createElement("log-manager-card");
+      rec._liveSummary = { textContent: "" };
+      rec._recordingLoggers = [];
+      rec._recordingBuffer = [];
+    });
+
+    test("uses singular wording for one entry and one logger", () => {
+      rec._recordingLoggers = ["rec.logger"];
+      rec._recordingBuffer = [{ id: 0, logger: "rec.logger", level: "INFO", message: "x" }];
+      rec._updateLiveSummary();
+      expect(rec._liveSummary.textContent).toBe(
+        "1 entry \u00B7 buffer at 0% \u00B7 1 logger recording \u00B7 1 with entry"
+      );
+    });
+
+    test("uses plural wording for multiple entries and loggers", () => {
+      rec._recordingLoggers = ["a.logger", "b.logger", "c.logger"];
+      rec._recordingBuffer = [
+        { id: 0, logger: "a.logger", level: "INFO", message: "x" },
+        { id: 1, logger: "a.logger", level: "WARNING", message: "y" },
+        { id: 2, logger: "b.logger", level: "ERROR", message: "z" },
+      ];
+      rec._updateLiveSummary();
+      expect(rec._liveSummary.textContent).toBe(
+        "3 entries \u00B7 buffer at 0% \u00B7 3 loggers recording \u00B7 2 with entries"
+      );
+    });
+
+    test("derives with-entries from the buffer, ignoring stale _recordingCounts", () => {
+      rec._recordingLoggers = ["a.logger"];
+      rec._recordingBuffer = [{ id: 0, logger: "a.logger", level: "INFO", message: "x" }];
+      rec._recordingCounts = { "stale.logger": 99 };
+      rec._updateLiveSummary();
+      expect(rec._liveSummary.textContent).toContain("1 with entry");
+      expect(rec._liveSummary.textContent).not.toContain("stale");
+    });
+  });
+
+  describe("_updateLiveTimer", () => {
+    let rec;
+
+    beforeEach(() => {
+      rec = document.createElement("log-manager-card");
+      rec._recordingLiveDialog = {};
+      rec._liveTimer = { textContent: "" };
+      rec._liveStatusText = { textContent: "" };
+      rec._liveStatusDot = { style: { display: "" } };
+      rec._recordingState = "recording";
+      rec._recordingStartTime = Date.now();
+      rec._recordingMaxDuration = 300;
+      rec._livePaused = false;
+    });
+
+    test("shows plain recording status when not paused", () => {
+      rec._updateLiveTimer();
+      expect(rec._liveStatusText.textContent).toBe("Recording");
+    });
+
+    test("shows paused status when the view is paused", () => {
+      rec._livePaused = true;
+      rec._updateLiveTimer();
+      expect(rec._liveStatusText.textContent).toBe("Recording \u00B7 view paused");
+    });
+
+    test("shows recording complete when recording has finished", () => {
+      rec._recordingState = "completed";
+      rec._updateLiveTimer();
+      expect(rec._liveStatusText.textContent).toBe("Recording Complete");
+    });
+  });
+
+  describe("_togglePauseLive", () => {
+    let rec;
+
+    beforeEach(() => {
+      rec = document.createElement("log-manager-card");
+      rec._livePaused = false;
+      rec._livePauseBtn = { textContent: "", title: "" };
+      rec._liveStatusText = { textContent: "" };
+      rec._recordingState = "recording";
+      rec._pollRecordingEntries = jest.fn();
+    });
+
+    test("updates the status text immediately with the paused label", () => {
+      rec._togglePauseLive();
+      expect(rec._livePaused).toBe(true);
+      expect(rec._livePauseBtn.textContent).toBe("Resume");
+      expect(rec._liveStatusText.textContent).toBe("Recording \u00B7 view paused");
+      expect(rec._pollRecordingEntries).not.toHaveBeenCalled();
+
+      rec._togglePauseLive();
+      expect(rec._livePaused).toBe(false);
+      expect(rec._livePauseBtn.textContent).toBe("Pause");
+      expect(rec._liveStatusText.textContent).toBe("Recording");
+      expect(rec._pollRecordingEntries).toHaveBeenCalledTimes(1);
+    });
+  });
 });

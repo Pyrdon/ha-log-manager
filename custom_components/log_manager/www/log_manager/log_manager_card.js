@@ -1826,6 +1826,7 @@ select.level-select {
     this._recordingBuffer = [];
     this._recordingDuration = 0;
     this._recordingLogCount = 0;
+    this._recordingCounts = {};
 
     this._updateRecordingUI();
 
@@ -2201,7 +2202,7 @@ select.level-select {
       const mins = String(Math.floor(remaining / 60)).padStart(2, "0");
       const secs = String(remaining % 60).padStart(2, "0");
       this._liveTimer.textContent = `${mins}:${secs} remaining`;
-      this._liveStatusText.textContent = "Recording";
+      this._liveStatusText.textContent = this._livePaused ? "Recording · view paused" : "Recording";
       this._liveStatusDot.style.display = "";
     } else {
       this._liveTimer.textContent = "";
@@ -2298,6 +2299,10 @@ select.level-select {
   _togglePauseLive() {
     this._livePaused = !this._livePaused;
     this._livePauseBtn.textContent = this._livePaused ? "Resume" : "Pause";
+    this._livePauseBtn.title = this._livePaused ? "View paused — click to resume" : "Pause viewer update";
+    if (this._recordingState === "recording") {
+      this._liveStatusText.textContent = this._livePaused ? "Recording · view paused" : "Recording";
+    }
     if (!this._livePaused) {
       this._pollRecordingEntries();
     }
@@ -2306,8 +2311,12 @@ select.level-select {
   _updateLiveSummary() {
     const total = this._recordingBuffer.length;
     const bufferPct = Math.round((total / 10000) * 100);
-    const loggerCount = Object.keys(this._recordingCounts).length;
-    this._liveSummary.textContent = `${total} entry${total === 1 ? "" : "s"} \u00B7 buffer at ${bufferPct}% \u00B7 ${loggerCount} logger${loggerCount === 1 ? "" : "s"} active`;
+    const recordingCount = this._recordingLoggers.length;
+    const withEntries = new Set(this._recordingBuffer.map(entry => entry.logger)).size;
+    this._liveSummary.textContent =
+      `${total} entr${total === 1 ? "y" : "ies"} \u00B7 buffer at ${bufferPct}% \u00B7 ` +
+      `${recordingCount} logger${recordingCount === 1 ? "" : "s"} recording \u00B7 ` +
+      `${withEntries} with entr${withEntries === 1 ? "y" : "ies"}`;
   }
 
   _updateRecordingUI() {
