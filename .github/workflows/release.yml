@@ -30,8 +30,8 @@ jobs:
                 { "title": "📚 Documentation", "labels": ["docs"] },
                 { "title": "🧰 Maintenance", "labels": ["chore", "refactor", "style", "test"] }
               ],
-              "template": "# Release Notes\n\n#{{UNCATEGORIZED}}\n",
-              "pr_template": "- #{{TITLE}} (#{{HASH}})"
+              "template": "# Release Notes\n\n#{{CHANGELOG}}\n\n#{{UNCATEGORIZED}}\n",
+              "pr_template": "- #{{TITLE}} (#{{MERGE_SHA}})"
             }
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
