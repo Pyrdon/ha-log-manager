@@ -14,7 +14,14 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.storage import Store
 
-from .const import DOMAIN, STORAGE_KEY, STORAGE_VERSION, match_managed_logger
+from .const import (
+    ALERT_DISABLED,
+    DEFAULT_COUNT_LEVEL,
+    DOMAIN,
+    STORAGE_KEY,
+    STORAGE_VERSION,
+    match_managed_logger,
+)
 from .recording import (
     async_register_recording_commands,
     async_stop_recording_session,
@@ -143,6 +150,18 @@ class LogManagerStore(Store):
             old_data["loggers"] = new_loggers
             _LOGGER.info("Migrated %s loggers.", len(new_loggers))
 
+        if old_major_version < 3:
+            # Schema v3: per-logger counting level, alert threshold, sensor
+            # opt-in and level-change audit trail.
+            for info in old_data.get("loggers", {}).values():
+                if not isinstance(info, dict):
+                    continue
+                info.setdefault("count_level", DEFAULT_COUNT_LEVEL)
+                info.setdefault("alert_threshold", ALERT_DISABLED)
+                info.setdefault("sensor_enabled", False)
+                info.setdefault("audit", [])
+            _LOGGER.info("Migrated %s loggers to schema v3.", len(old_data.get("loggers", {})))
+
         return old_data
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -246,7 +265,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Register the new configuration in memory and storage.
         stored_loggers[logger_name] = {
             "friendly_name": friendly_name,
-            "level": "NOTSET"
+            "level": "NOTSET",
+            "count_level": DEFAULT_COUNT_LEVEL,
+            "alert_threshold": ALERT_DISABLED,
+            "sensor_enabled": False,
+            "audit": [],
         }
         hass.data[DOMAIN]["loggers"] = stored_loggers
 

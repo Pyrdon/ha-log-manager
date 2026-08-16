@@ -2,8 +2,12 @@ from collections.abc import Iterable
 
 DOMAIN = "log_manager"
 STORAGE_KEY = f"{DOMAIN}.config"
-STORAGE_VERSION = 2
+STORAGE_VERSION = 3
 LOG_LEVELS_LIST = ["NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+
+# Per-logger options (storage schema v3).
+DEFAULT_COUNT_LEVEL = "WARNING"
+ALERT_DISABLED = 0
 
 
 def match_managed_logger(name: str, managed: Iterable[str]) -> str | None:
