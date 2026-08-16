@@ -4,8 +4,16 @@ A dynamic control panel for managing Python loggers in Home Assistant. This cust
 
 ## Features
 * **Dynamic Log Levels:** Change logger levels (DEBUG, INFO, WARNING, ERROR, CRITICAL) instantly from the frontend.
+* **Warning/Error Counters:** Counts WARNING and above per managed logger, shown as badges on each logger row with an expandable panel of the most recent matching log entries. Reset counters per logger or for all loggers.
+* **Live Log Recording:** Record log output from selected loggers for up to an hour, preview it in real time, then stop to review. Export the captured entries as a plain-text `.log` file, JSON Lines (`.jsonl`), or copy them to the clipboard. Recorded sessions stay available until you explicitly discard them.
 * **Smart UI Card:** Includes a custom Lovelace card with fuzzy searching.
 * **Persistent Configuration:** Active loggers and their levels are saved to Home Assistant storage and restored automatically on reboot.
+
+## Services
+The integration exposes the following services (callable from automations and the developer tools):
+* `log_manager.add_logger` — Control a new logger, optionally with a friendly name.
+* `log_manager.remove_logger` — Stop controlling a managed logger.
+* `log_manager.reset_counters` — Reset warning/error counters, for a single logger or all loggers.
 
 ## Installation
 
