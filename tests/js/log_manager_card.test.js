@@ -519,6 +519,84 @@ describe("LogManagerCard", () => {
     });
   });
 
+  describe("counting level panel", () => {
+    beforeEach(() => {
+      cardInstance._hass = {
+        states: {
+          "select.test": {
+            state: "INFO",
+            attributes: { logger_name: "t.logger", count_level: "INFO" },
+          },
+        },
+        callService: jest.fn(),
+      };
+      cardInstance._counters = {
+        "t.logger": {
+          warning: 1,
+          error: 0,
+          recent_logs: [
+            {
+              timestamp: 1700000000,
+              level: "INFO",
+              logger: "t.logger",
+              message: "some info",
+              source: "",
+            },
+          ],
+          levels: { INFO: 12, WARNING: 1 },
+        },
+      };
+    });
+
+    test("renders the count select with the entity's counting level selected", () => {
+      const html = cardInstance._renderLogPanelHtml("t.logger");
+      expect(html).toContain('class="count-level-select"');
+      expect(html).toContain('<option value="INFO" selected>INFO</option>');
+    });
+
+    test("disclaimer reflects the counting threshold", () => {
+      const html = cardInstance._renderLogPanelHtml("t.logger");
+      expect(html).toContain("INFO and above");
+    });
+
+    test("renders a per-severity count line and omits zero counts", () => {
+      const html = cardInstance._renderLogPanelHtml("t.logger");
+      expect(html).toContain("INFO 12");
+      expect(html).toContain("WARNING 1");
+      expect(html).not.toContain("ERROR 0");
+      expect(html).not.toContain("DEBUG 0");
+    });
+
+    test("renders INFO entries with an info chip", () => {
+      const html = cardInstance._renderLogPanelHtml("t.logger");
+      expect(html).toContain("log-level-info");
+      expect(html).toContain(">I</span>");
+    });
+
+    test("defaults to WARNING when no entity exposes a counting level", () => {
+      cardInstance._hass = { states: {}, callService: jest.fn() };
+      const html = cardInstance._renderLogPanelHtml("t.logger");
+      expect(html).toContain('<option value="WARNING" selected>WARNING</option>');
+      expect(html).toContain("WARNING and above");
+    });
+
+    test("changing the count select calls set_count_level", () => {
+      const row = document.createElement("div");
+      row.innerHTML = cardInstance._renderLogPanelHtml("t.logger");
+      cardInstance._attachCountLevelHandler(row);
+
+      const sel = row.querySelector(".count-level-select");
+      sel.value = "DEBUG";
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+
+      expect(cardInstance._hass.callService).toHaveBeenCalledWith(
+        "log_manager",
+        "set_count_level",
+        { logger_name: "t.logger", level: "DEBUG" }
+      );
+    });
+  });
+
   describe("_openRecordingSetup", () => {
     let rec;
 

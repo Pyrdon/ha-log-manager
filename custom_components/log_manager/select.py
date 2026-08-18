@@ -4,7 +4,7 @@ import logging
 from homeassistant.components.select import SelectEntity
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
-from .const import DOMAIN, LOG_LEVELS_LIST as LOG_LEVELS
+from .const import DEFAULT_COUNT_LEVEL, DOMAIN, LOG_LEVELS_LIST as LOG_LEVELS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -104,10 +104,16 @@ class LogLevelSelect(SelectEntity):
     @property
     def extra_state_attributes(self):
         """
-        Expose the actual backend logger path so the frontend knows what to delete.
+        Expose the backend logger path and counting level to the frontend.
         """
 
-        return {"logger_name": self._logger_name}
+        stored_info = self.hass.data.get(DOMAIN, {}).get("loggers", {}).get(
+            self._logger_name, {}
+        )
+        return {
+            "logger_name": self._logger_name,
+            "count_level": stored_info.get("count_level", DEFAULT_COUNT_LEVEL),
+        }
 
     async def async_select_option(self, option: str) -> None:
         """

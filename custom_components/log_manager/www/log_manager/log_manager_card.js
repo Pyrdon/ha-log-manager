@@ -84,36 +84,88 @@ class LogManagerCard extends HTMLElement {
     return html;
   }
 
+  _findEntityIdByLogger(loggerName) {
+    if (!this._hass) return null;
+    const eid = Object.keys(this._hass.states).find(id => {
+      if (!id.startsWith("select.")) return false;
+      return this._hass.states[id].attributes.logger_name === loggerName;
+    });
+    return eid || null;
+  }
+
+  _getCountLevelInfo(loggerName) {
+    const eid = this._findEntityIdByLogger(loggerName);
+    if (!eid) return { countLevel: "WARNING", disabled: true };
+    const stateObj = this._hass.states[eid];
+    const unavailable = stateObj.state === "unavailable" || stateObj.state === "unknown";
+    return {
+      countLevel: stateObj.attributes.count_level || "WARNING",
+      disabled: unavailable,
+    };
+  }
+
+  _renderSeverityLine(levels) {
+    const order = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"];
+    const parts = [];
+    for (const level of order) {
+      const count = (levels || {})[level] || 0;
+      if (count > 0) {
+        const colors = this._levelColors(level);
+        parts.push(`<span style="color: ${colors.color};">${level} ${count}</span>`);
+      }
+    }
+    if (parts.length === 0) return "";
+    return `<div class="severity-line" title="Events counted per severity since the last reset">${parts.join(" · ")}</div>`;
+  }
+
   _renderLogPanelHtml(loggerName) {
-    const stats = this._counters[loggerName] || {"warning": 0, "error": 0, "recent_logs": []};
-    const hasCounters = (stats.warning || 0) > 0 || (stats.error || 0) > 0;
+    const stats = this._counters[loggerName] || {"warning": 0, "error": 0, "recent_logs": [], "levels": {}};
+    const hasCounters = (stats.warning || 0) > 0 || (stats.error || 0) > 0 || (stats.recent_logs || []).length > 0;
+
+    const { countLevel, disabled } = this._getCountLevelInfo(loggerName);
+    const countLabel = countLevel === "NOTSET" ? "all levels" : `${countLevel} and above`;
 
     const recentLogs = stats.recent_logs || [];
     let entriesHtml = "";
     if (recentLogs.length === 0) {
       entriesHtml = `<div class="log-entry-empty">No recent log entries.</div>`;
     } else {
+      const levelChips = {
+        "CRITICAL": ["C", "log-level-error"],
+        "ERROR": ["E", "log-level-error"],
+        "WARNING": ["W", "log-level-warning"],
+        "INFO": ["I", "log-level-info"],
+        "DEBUG": ["D", "log-level-debug"],
+      };
       recentLogs.forEach(entry => {
         const time = new Date(entry.timestamp * 1000).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
-        const levelClass = entry.level === "ERROR" || entry.level === "CRITICAL"
-          ? "log-level-error" : "log-level-warning";
-        const levelLabel = entry.level === "CRITICAL" ? "C" : entry.level === "ERROR" ? "E" : "W";
+        const chip = levelChips[entry.level] || [entry.level.charAt(0), "log-level-debug"];
         const msg = this._escapeHtml(entry.message);
         const src = entry.source ? this._escapeHtml(entry.source.split("/").pop()) : "";
         entriesHtml += `
           <div class="log-entry">
             <span class="log-time">${time}</span>
-            <span class="log-level ${levelClass}">${levelLabel}</span>
+            <span class="log-level ${chip[1]}">${chip[0]}</span>
             <span class="log-msg">${msg}</span>
             ${src ? `<span class="log-src">${src}</span>` : ""}
           </div>`;
       });
     }
 
+    const countOptions = ["NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+      .map(l => `<option value="${l}"${l === countLevel ? " selected" : ""}>${l}</option>`).join("");
+
     return `
       <div class="log-panel">
+        <div class="severity-line-row">
+          ${this._renderSeverityLine(stats.levels)}
+          <label class="count-level-row" title="Only events at or above this level are counted for the badges and this panel">
+            Count from:
+            <select class="count-level-select" data-logger="${this._escapeAttr(loggerName)}"${disabled ? " disabled" : ""}>${countOptions}</select>
+          </label>
+        </div>
         <div class="log-entries">${entriesHtml}</div>
-        <div class="log-disclaimer" title="This panel is fed by the counter badges, which capture WARNING and above for every logger regardless of its configured level. It does not affect or reflect recording.">This panel shows only WARNING and above, independent of the configured level.</div>
+        <div class="log-disclaimer" title="This panel is fed by the counter badges, which capture events at or above the counting level for every logger regardless of its configured level. It does not affect or reflect recording.">This panel shows ${this._escapeHtml(countLabel)}, independent of the configured level.</div>
         <div style="display: flex; gap: 8px; margin-top: 8px;">
           <button class="reset-btn" data-logger="${this._escapeAttr(loggerName)}"${hasCounters ? "" : " disabled"}>
             <ha-icon icon="mdi:refresh" style="--mdi-icon-size: 14px;"></ha-icon>
@@ -215,10 +267,28 @@ class LogManagerCard extends HTMLElement {
       });
       // Reset counters but keep the panel open.
       if (this._counters[loggerName]) {
-        this._counters[loggerName] = {"warning": 0, "error": 0, "last_warning": "", "last_error": "", "recent_logs": []};
+        this._counters[loggerName] = {"warning": 0, "error": 0, "last_warning": "", "last_error": "", "recent_logs": [], "levels": {}};
       }
       this._updateActiveList();
     });
+  }
+
+  _attachCountLevelHandler(row) {
+    const sel = row.querySelector(".count-level-select");
+    if (!sel) return;
+    // Remove stale listeners to prevent duplicate handler accumulation.
+    const clone = sel.cloneNode(true);
+    sel.replaceWith(clone);
+    clone.addEventListener("change", () => {
+      const loggerName = clone.dataset.logger;
+      if (!loggerName) return;
+      this._hass.callService("log_manager", "set_count_level", {
+        logger_name: loggerName,
+        level: clone.value
+      });
+    });
+    // Prevent select interaction from toggling expand.
+    clone.addEventListener("click", (e) => e.stopPropagation());
   }
 
   _attachCopyPanelHandler(row) {
@@ -501,6 +571,54 @@ class LogManagerCard extends HTMLElement {
         .log-level-error {
           background: rgba(244, 67, 54, 0.18);
           color: var(--error-color);
+        }
+
+        .log-level-info {
+          background: rgba(76, 175, 80, 0.18);
+          color: #4caf50;
+        }
+
+        .log-level-debug {
+          background: rgba(3, 169, 244, 0.18);
+          color: #03a9f4;
+        }
+
+        .severity-line-row {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 8px;
+          margin-bottom: 6px;
+          min-height: 22px;
+        }
+
+        .severity-line {
+          font-size: 11px;
+          color: var(--secondary-text-color);
+        }
+
+        .count-level-row {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 11px;
+          color: var(--secondary-text-color);
+          margin-left: auto;
+        }
+
+        select.count-level-select {
+          padding: 2px 6px;
+          border-radius: 4px;
+          border: 1px solid var(--divider-color);
+          font-size: 11px;
+          cursor: pointer;
+          background: var(--card-background-color);
+          color: var(--primary-text-color);
+        }
+
+        select.count-level-select:disabled {
+          opacity: 0.5;
+          cursor: default;
         }
 
         .log-msg {
@@ -1608,6 +1726,7 @@ select.level-select {
         this._attachBadgeHandlers(row);
         this._attachResetHandler(row);
         this._attachCopyPanelHandler(row);
+        this._attachCountLevelHandler(row);
         this._updateRecordingCountBadge(
           row, actualLoggerName,
           this._recordingCounts[actualLoggerName] || 0,
@@ -1648,12 +1767,14 @@ select.level-select {
               this._prevPanelHtml[actualLoggerName] = panelHtml;
               this._attachResetHandler(row);
               this._attachCopyPanelHandler(row);
+              this._attachCountLevelHandler(row);
             }
           } else {
             row.insertAdjacentHTML("beforeend", panelHtml);
             this._prevPanelHtml[actualLoggerName] = panelHtml;
             this._attachResetHandler(row);
             this._attachCopyPanelHandler(row);
+            this._attachCountLevelHandler(row);
           }
         } else if (panel) {
           panel.remove();

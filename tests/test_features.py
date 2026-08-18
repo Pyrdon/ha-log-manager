@@ -1,9 +1,11 @@
 """Tests for the v3 storage schema migration."""
 
+import logging
 from unittest.mock import MagicMock, patch
 
 from custom_components.log_manager import (
     DOMAIN,
+    LogCounterHandler,
     LogManagerStore,
     STORAGE_VERSION,
 )
@@ -11,6 +13,10 @@ from custom_components.log_manager.const import (
     ALERT_DISABLED,
     DEFAULT_COUNT_LEVEL,
 )
+
+
+def _make_record(name, level, msg="test", pathname="test.py", lineno=1):
+    return logging.LogRecord(name, level, pathname, lineno, msg, (), None)
 
 
 class TestMigrationV3:
@@ -81,3 +87,58 @@ class TestMigrationV3:
         assert info["friendly_name"] == "Legacy Name"
         assert info["level"] == "WARNING"
         assert info["count_level"] == DEFAULT_COUNT_LEVEL
+
+
+class TestCounterThreshold:
+    def _handler_and_hass(self, hass):
+        hass.data[DOMAIN] = {
+            "loggers": {
+                "chatty": {
+                    "friendly_name": "Chatty",
+                    "level": "NOTSET",
+                    "count_level": "INFO",
+                },
+                "quiet": {
+                    "friendly_name": "Quiet",
+                    "level": "NOTSET",
+                    "count_level": "WARNING",
+                },
+            },
+            "counters": {},
+        }
+        return LogCounterHandler(hass)
+
+    def test_update_level_uses_lowest_threshold(self, hass):
+        handler = self._handler_and_hass(hass)
+        handler.update_level()
+        assert handler.level == logging.INFO
+
+    def test_emit_respects_per_logger_threshold(self, hass):
+        handler = self._handler_and_hass(hass)
+        handler.emit(_make_record("chatty", logging.INFO, msg="info chatty"))
+        handler.emit(_make_record("chatty", logging.DEBUG, msg="debug chatty"))
+        handler.emit(_make_record("quiet", logging.INFO, msg="info quiet"))
+        handler.emit(_make_record("quiet", logging.WARNING, msg="warn quiet"))
+
+        counters = hass.data[DOMAIN]["counters"]
+        assert counters["chatty"]["levels"].get("INFO") == 1
+        assert counters["chatty"]["warning"] == 0
+        assert counters["chatty"]["error"] == 0
+        assert "DEBUG" not in counters["chatty"]["levels"]
+        assert counters["quiet"]["levels"].get("WARNING") == 1
+        assert counters["quiet"]["warning"] == 1
+
+    def test_levels_breakdown_separates_severities(self, hass):
+        hass.data[DOMAIN] = {
+            "loggers": {"mix": {"friendly_name": "Mix", "level": "NOTSET"}},
+            "counters": {},
+        }
+        handler = LogCounterHandler(hass)
+        handler.emit(_make_record("mix", logging.WARNING))
+        handler.emit(_make_record("mix", logging.ERROR))
+        handler.emit(_make_record("mix", logging.CRITICAL))
+
+        counter = hass.data[DOMAIN]["counters"]["mix"]
+        assert counter["warning"] == 1
+        assert counter["error"] == 2
+        assert counter["levels"] == {"WARNING": 1, "ERROR": 1, "CRITICAL": 1}

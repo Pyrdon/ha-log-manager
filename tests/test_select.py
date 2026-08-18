@@ -17,7 +17,9 @@ async def test_entity_initialization(hass):
     assert entity.options == LOG_LEVELS
     assert entity.current_option == "WARNING"
     assert entity.unique_id == "log_manager_my_module"
-    assert entity.extra_state_attributes == {"logger_name": "my.module"}
+    attrs = entity.extra_state_attributes
+    assert attrs["logger_name"] == "my.module"
+    assert attrs["count_level"] == "WARNING"
 
 
 async def test_entity_init_defaults_to_info_when_no_stored_level(hass):

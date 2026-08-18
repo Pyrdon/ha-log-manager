@@ -18,6 +18,7 @@ from .const import (
     ALERT_DISABLED,
     DEFAULT_COUNT_LEVEL,
     DOMAIN,
+    LOG_LEVELS_LIST,
     STORAGE_KEY,
     STORAGE_VERSION,
     match_managed_logger,
@@ -43,11 +44,12 @@ def _empty_counters() -> dict:
         "last_warning": "",
         "last_error": "",
         "recent_logs": [],
+        "levels": {},
     }
 
 
 class LogCounterHandler(logging.Handler):
-    """Count warnings and errors for managed loggers."""
+    """Count events for managed loggers above each logger's configured level."""
 
     MAX_RECENT = 10
 
@@ -55,6 +57,32 @@ class LogCounterHandler(logging.Handler):
         super().__init__(logging.WARNING)
         self.hass = hass
         self._lock = threading.Lock()
+
+    def _count_level_for(self, logger_name: str) -> int:
+        info = self.hass.data.get(DOMAIN, {}).get("loggers", {}).get(logger_name, {})
+        raw = info.get("count_level", DEFAULT_COUNT_LEVEL)
+        if raw == "NOTSET":
+            # NOTSET as a counting threshold means "everything": resolve it to
+            # DEBUG, mirroring the recording capture convention.
+            return logging.DEBUG
+        level = getattr(logging, raw, None) if isinstance(raw, str) else None
+        if not isinstance(level, int):
+            return logging.WARNING
+        return level
+
+    def update_level(self) -> None:
+        """Set the handler level to the lowest configured count level.
+
+        Keeps the default at WARNING so the handler only pays for DEBUG/INFO
+        records once a logger explicitly asks for a lower counting level.
+        """
+        loggers = self.hass.data.get(DOMAIN, {}).get("loggers", {})
+        if not loggers:
+            self.level = logging.WARNING
+            return
+        self.level = min(
+            (self._count_level_for(name) for name in loggers), default=logging.WARNING
+        )
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -68,6 +96,9 @@ class LogCounterHandler(logging.Handler):
             matched_name = match_managed_logger(record.name, loggers)
 
             if matched_name is None:
+                return
+
+            if record.levelno < self._count_level_for(matched_name):
                 return
 
             msg = record.getMessage()
@@ -92,10 +123,14 @@ class LogCounterHandler(logging.Handler):
                 if len(recent) > self.MAX_RECENT:
                     del recent[self.MAX_RECENT:]
 
+                counters[matched_name]["levels"][level_name] = (
+                    counters[matched_name]["levels"].get(level_name, 0) + 1
+                )
+
                 if record.levelno >= logging.ERROR:
                     counters[matched_name]["error"] += 1
                     counters[matched_name]["last_error"] = msg
-                else:
+                elif record.levelno >= logging.WARNING:
                     counters[matched_name]["warning"] += 1
                     counters[matched_name]["last_warning"] = msg
         except Exception:
@@ -275,6 +310,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         # Initialize counters for the new logger.
         hass.data[DOMAIN]["counters"][logger_name] = _empty_counters()
+        counter_handler.update_level()
 
         await save_data()
 
@@ -297,6 +333,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if logger_name in hass.data[DOMAIN]["loggers"]:
             del hass.data[DOMAIN]["loggers"][logger_name]
             hass.data[DOMAIN]["counters"].pop(logger_name, None)
+            counter_handler.update_level()
             await save_data()
             async_dispatcher_send(hass, f"{DOMAIN}_remove_logger", logger_name)
 
@@ -336,6 +373,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             vol.Optional("logger_name"): cv.string,
         })
     )
+
+    async def set_count_level(call):
+        """Set the counting threshold for a managed logger."""
+        logger_name = call.data["logger_name"]
+        level = call.data["level"]
+        info = hass.data[DOMAIN]["loggers"].get(logger_name)
+        if not info:
+            _LOGGER.warning("set_count_level: '%s' is not managed.", logger_name)
+            return
+        info["count_level"] = level
+        await save_data()
+        counter_handler.update_level()
+        _LOGGER.info("Set count level of '%s' to %s.", logger_name, level)
+
+    hass.services.async_register(
+        DOMAIN,
+        "set_count_level",
+        set_count_level,
+        schema=vol.Schema({
+            vol.Required("logger_name"): cv.string,
+            vol.Required("level"): vol.In(LOG_LEVELS_LIST),
+        })
+    )
+
+    # Size the counter handler to the lowest configured counting level.
+    counter_handler.update_level()
 
     # Forward the setup to the select platform so it can create the entities.
     await hass.config_entries.async_forward_entry_setups(entry, ["select"])

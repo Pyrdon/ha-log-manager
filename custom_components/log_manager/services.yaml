@@ -40,3 +40,28 @@ reset_counters:
       required: false
       selector:
         text:
+
+set_count_level:
+  name: Set Count Level
+  description: Set the counting threshold for a managed logger.
+  fields:
+    logger_name:
+      name: Logger Name
+      description: The Python logger namespace to configure.
+      example: homeassistant.components.light
+      required: true
+      selector:
+        text:
+    level:
+      name: Level
+      description: Only events at or above this level are counted and retained.
+      required: true
+      selector:
+        select:
+          options:
+            - NOTSET
+            - DEBUG
+            - INFO
+            - WARNING
+            - ERROR
+            - CRITICAL
