@@ -1,12 +1,14 @@
 import copy
+import hashlib
 import logging
 import mimetypes
 import os
+import re
 import threading
 
 import voluptuous as vol
 
-from homeassistant.components import websocket_api
+from homeassistant.components import persistent_notification, websocket_api
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -16,6 +18,7 @@ from homeassistant.helpers.storage import Store
 
 from .const import (
     ALERT_DISABLED,
+    DEFAULT_ALERT_LEVEL,
     DEFAULT_COUNT_LEVEL,
     DOMAIN,
     LOG_LEVELS_LIST,
@@ -45,6 +48,7 @@ def _empty_counters() -> dict:
         "last_error": "",
         "recent_logs": [],
         "levels": {},
+        "alert_fired": False,
     }
 
 
@@ -133,13 +137,53 @@ class LogCounterHandler(logging.Handler):
                 elif record.levelno >= logging.WARNING:
                     counters[matched_name]["warning"] += 1
                     counters[matched_name]["last_warning"] = msg
+
+                self._maybe_alert(matched_name, counters[matched_name])
         except Exception:
             self.handleError(record)
 
-    def snapshot(self) -> dict:
-        """Return a thread-safe copy of the current counters."""
+    def _maybe_alert(self, logger_name: str, counter: dict) -> None:
+        """Fire a notification the first time events cross the alert threshold."""
+        if counter["alert_fired"]:
+            return
+        info = self.hass.data.get(DOMAIN, {}).get("loggers", {}).get(logger_name, {})
+        threshold = info.get("alert_threshold", ALERT_DISABLED)
+        if not threshold:
+            return
+        alert_level = info.get("alert_level", DEFAULT_ALERT_LEVEL)
+        if alert_level not in ("WARNING", "ERROR", "CRITICAL"):
+            alert_level = DEFAULT_ALERT_LEVEL
+        alert_min = getattr(logging, alert_level, logging.ERROR)
+        qualifying = sum(
+            count
+            for level_name, count in counter["levels"].items()
+            if getattr(logging, level_name, 0) >= alert_min
+        )
+        if qualifying < threshold:
+            return
+        counter["alert_fired"] = True
+        _schedule_alert(self.hass, logger_name, qualifying, alert_level, threshold)
+
+    def check_alert(self, logger_name: str) -> None:
+        """Evaluate the alert threshold once (e.g. after reconfiguration)."""
         with self._lock:
-            return copy.deepcopy(self.hass.data[DOMAIN]["counters"])
+            counter = (
+                self.hass.data.get(DOMAIN, {}).get("counters", {}).get(logger_name)
+            )
+            if counter:
+                self._maybe_alert(logger_name, counter)
+
+    def snapshot(self) -> dict:
+        """Return a thread-safe copy of the current counters.
+
+        The internal alert re-arm flag is stripped: it is not part of the
+        public websocket payload.
+        """
+        with self._lock:
+            counters = copy.deepcopy(self.hass.data[DOMAIN]["counters"])
+        for counter in counters.values():
+            counter.pop("alert_fired", None)
+        return counters
 
     def reset(self, logger_name: str | None = None) -> None:
         """Reset warning and error counters for one or all managed loggers."""
@@ -153,6 +197,47 @@ class LogCounterHandler(logging.Handler):
                 for name in counters:
                     counters[name] = _empty_counters()
                 _LOGGER.info("Reset counters for all loggers.")
+
+
+def _schedule_alert(
+    hass: HomeAssistant,
+    logger_name: str,
+    count: int,
+    alert_level: str,
+    threshold: int,
+) -> None:
+    """Schedule a persistent notification for a threshold crossing."""
+
+    def _create() -> None:
+        hass.async_create_task(
+            _create_alert_notification(hass, logger_name, count, alert_level, threshold)
+        )
+
+    try:
+        hass.loop.call_soon_threadsafe(_create)
+    except RuntimeError:
+        pass
+
+
+async def _create_alert_notification(
+    hass: HomeAssistant,
+    logger_name: str,
+    count: int,
+    alert_level: str,
+    threshold: int,
+) -> None:
+    """Create a persistent notification for a managed logger's alert threshold."""
+    safe_name = re.sub(r"[^a-z0-9_]", "_", logger_name.lower())
+    digest = hashlib.sha1(logger_name.encode("utf-8")).hexdigest()[:8]
+    unit = "event" if count == 1 else "events"
+    persistent_notification.async_create(
+        hass,
+        f"'{logger_name}' has logged {count} counted {unit} at "
+        f"{alert_level} or above since the counters were last reset "
+        f"(threshold {threshold}). [View logs](/config/logs)",
+        f"Log Manager: {logger_name}",
+        f"log_manager_alert_{safe_name}_{digest}",
+    )
 
 
 class LogManagerStore(Store):
@@ -193,6 +278,7 @@ class LogManagerStore(Store):
                     continue
                 info.setdefault("count_level", DEFAULT_COUNT_LEVEL)
                 info.setdefault("alert_threshold", ALERT_DISABLED)
+                info.setdefault("alert_level", DEFAULT_ALERT_LEVEL)
                 info.setdefault("sensor_enabled", False)
                 info.setdefault("audit", [])
             _LOGGER.info("Migrated %s loggers to schema v3.", len(old_data.get("loggers", {})))
@@ -303,6 +389,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "level": "NOTSET",
             "count_level": DEFAULT_COUNT_LEVEL,
             "alert_threshold": ALERT_DISABLED,
+            "alert_level": DEFAULT_ALERT_LEVEL,
             "sensor_enabled": False,
             "audit": [],
         }
@@ -394,6 +481,40 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         schema=vol.Schema({
             vol.Required("logger_name"): cv.string,
             vol.Required("level"): vol.In(LOG_LEVELS_LIST),
+        })
+    )
+
+    async def set_alert_threshold(call):
+        """Set the alert threshold and severity for a managed logger."""
+        logger_name = call.data["logger_name"]
+        threshold = call.data["events"]
+        info = hass.data[DOMAIN]["loggers"].get(logger_name)
+        if not info:
+            _LOGGER.warning("set_alert_threshold: '%s' is not managed.", logger_name)
+            return
+        info["alert_threshold"] = threshold
+        if "level" in call.data:
+            info["alert_level"] = call.data["level"]
+        # Re-arm the alert so the next crossing notifies again.
+        counter = hass.data[DOMAIN]["counters"].get(logger_name)
+        if counter:
+            counter["alert_fired"] = False
+        await save_data()
+        # Notify immediately if the new threshold is already satisfied.
+        counter_handler.check_alert(logger_name)
+        _LOGGER.info(
+            "Set alert threshold of '%s' to %s events at %s and above.",
+            logger_name, threshold, info.get("alert_level", DEFAULT_ALERT_LEVEL),
+        )
+
+    hass.services.async_register(
+        DOMAIN,
+        "set_alert_threshold",
+        set_alert_threshold,
+        schema=vol.Schema({
+            vol.Required("logger_name"): cv.string,
+            vol.Required("events"): vol.All(vol.Coerce(int), vol.Range(min=0)),
+            vol.Optional("level"): vol.In(["WARNING", "ERROR", "CRITICAL"]),
         })
     )
 

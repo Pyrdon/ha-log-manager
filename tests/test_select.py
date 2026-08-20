@@ -20,6 +20,8 @@ async def test_entity_initialization(hass):
     attrs = entity.extra_state_attributes
     assert attrs["logger_name"] == "my.module"
     assert attrs["count_level"] == "WARNING"
+    assert attrs["alert_threshold"] == 0
+    assert attrs["alert_level"] == "ERROR"
 
 
 async def test_entity_init_defaults_to_info_when_no_stored_level(hass):

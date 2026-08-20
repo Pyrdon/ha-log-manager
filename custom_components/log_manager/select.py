@@ -4,7 +4,13 @@ import logging
 from homeassistant.components.select import SelectEntity
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
-from .const import DEFAULT_COUNT_LEVEL, DOMAIN, LOG_LEVELS_LIST as LOG_LEVELS
+from .const import (
+    ALERT_DISABLED,
+    DEFAULT_ALERT_LEVEL,
+    DEFAULT_COUNT_LEVEL,
+    DOMAIN,
+    LOG_LEVELS_LIST as LOG_LEVELS,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -113,6 +119,10 @@ class LogLevelSelect(SelectEntity):
         return {
             "logger_name": self._logger_name,
             "count_level": stored_info.get("count_level", DEFAULT_COUNT_LEVEL),
+            "alert_threshold": stored_info.get(
+                "alert_threshold", ALERT_DISABLED
+            ),
+            "alert_level": stored_info.get("alert_level", DEFAULT_ALERT_LEVEL),
         }
 
     async def async_select_option(self, option: str) -> None:

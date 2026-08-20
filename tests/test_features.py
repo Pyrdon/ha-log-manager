@@ -3,6 +3,10 @@
 import logging
 from unittest.mock import MagicMock, patch
 
+import pytest
+import voluptuous as vol
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
 from custom_components.log_manager import (
     DOMAIN,
     LogCounterHandler,
@@ -15,8 +19,27 @@ from custom_components.log_manager.const import (
 )
 
 
+STORE_DATA = {
+    "loggers": {
+        "rec.logger": {"friendly_name": "Rec Logger", "level": "NOTSET"},
+        "other.logger": {"friendly_name": "Other Logger", "level": "NOTSET"},
+    }
+}
+
+
 def _make_record(name, level, msg="test", pathname="test.py", lineno=1):
     return logging.LogRecord(name, level, pathname, lineno, msg, (), None)
+
+
+async def _setup(hass):
+    with patch(
+        "custom_components.log_manager.LogManagerStore.async_load",
+        return_value={"loggers": STORE_DATA["loggers"]},
+    ):
+        entry = MockConfigEntry(domain=DOMAIN, data={})
+        entry.add_to_hass(hass)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
 
 
 class TestMigrationV3:
@@ -142,3 +165,134 @@ class TestCounterThreshold:
         assert counter["warning"] == 1
         assert counter["error"] == 2
         assert counter["levels"] == {"WARNING": 1, "ERROR": 1, "CRITICAL": 1}
+
+
+class TestAlerts:
+    def test_alert_fires_once_on_threshold_crossing(self, hass):
+        hass.data[DOMAIN] = {
+            "loggers": {
+                "alerty": {
+                    "friendly_name": "Alerty",
+                    "level": "NOTSET",
+                    "alert_threshold": 3,
+                }
+            },
+            "counters": {},
+        }
+        handler = LogCounterHandler(hass)
+
+        with patch("custom_components.log_manager._schedule_alert") as mock_schedule:
+            for _ in range(4):
+                handler.emit(_make_record("alerty", logging.ERROR, msg="err"))
+
+        assert mock_schedule.call_count == 1
+        counter = hass.data[DOMAIN]["counters"]["alerty"]
+        assert counter["error"] == 4
+        assert counter["alert_fired"] is True
+
+    def test_alert_fires_again_after_reset(self, hass):
+        hass.data[DOMAIN] = {
+            "loggers": {
+                "alerty": {
+                    "friendly_name": "Alerty",
+                    "level": "NOTSET",
+                    "alert_threshold": 2,
+                }
+            },
+            "counters": {},
+        }
+        handler = LogCounterHandler(hass)
+
+        with patch("custom_components.log_manager._schedule_alert") as mock_schedule:
+            handler.emit(_make_record("alerty", logging.ERROR, msg="e1"))
+            handler.emit(_make_record("alerty", logging.ERROR, msg="e2"))
+        assert mock_schedule.call_count == 1
+
+        handler.reset("alerty")
+        assert hass.data[DOMAIN]["counters"]["alerty"]["alert_fired"] is False
+
+        with patch("custom_components.log_manager._schedule_alert") as mock_schedule2:
+            handler.emit(_make_record("alerty", logging.ERROR, msg="e3"))
+            handler.emit(_make_record("alerty", logging.ERROR, msg="e4"))
+        assert mock_schedule2.call_count == 1
+
+    def test_alert_counts_at_configured_severity(self, hass):
+        hass.data[DOMAIN] = {
+            "loggers": {
+                "warnful": {
+                    "friendly_name": "Warnful",
+                    "level": "NOTSET",
+                    "alert_threshold": 2,
+                    "alert_level": "WARNING",
+                }
+            },
+            "counters": {},
+        }
+        handler = LogCounterHandler(hass)
+
+        with patch("custom_components.log_manager._schedule_alert") as mock_schedule:
+            handler.emit(_make_record("warnful", logging.WARNING, msg="w1"))
+            assert mock_schedule.call_count == 0
+            handler.emit(_make_record("warnful", logging.WARNING, msg="w2"))
+        assert mock_schedule.call_count == 1
+        assert hass.data[DOMAIN]["counters"]["warnful"]["alert_fired"] is True
+
+    async def test_set_alert_threshold_service_accepts_level(self, hass):
+        await _setup(hass)
+
+        await hass.services.async_call(
+            DOMAIN,
+            "set_alert_threshold",
+            {"logger_name": "rec.logger", "events": 4, "level": "WARNING"},
+            blocking=True,
+        )
+
+        info = hass.data[DOMAIN]["loggers"]["rec.logger"]
+        assert info["alert_threshold"] == 4
+        assert info["alert_level"] == "WARNING"
+
+    async def test_set_alert_threshold_without_level_preserves_level(self, hass):
+        await _setup(hass)
+
+        await hass.services.async_call(
+            DOMAIN,
+            "set_alert_threshold",
+            {"logger_name": "rec.logger", "events": 4, "level": "WARNING"},
+            blocking=True,
+        )
+        await hass.services.async_call(
+            DOMAIN,
+            "set_alert_threshold",
+            {"logger_name": "rec.logger", "events": 7},
+            blocking=True,
+        )
+
+        info = hass.data[DOMAIN]["loggers"]["rec.logger"]
+        assert info["alert_threshold"] == 7
+        assert info["alert_level"] == "WARNING"
+
+    async def test_disabled_alert_never_fires(self, hass):
+        await _setup(hass)
+        await hass.services.async_call(
+            DOMAIN,
+            "set_alert_threshold",
+            {"logger_name": "rec.logger", "events": 0},
+            blocking=True,
+        )
+
+        handler = hass.data[DOMAIN]["counter_handler"]
+        with patch("custom_components.log_manager._schedule_alert") as mock_schedule:
+            for _ in range(3):
+                handler.emit(_make_record("rec.logger", logging.ERROR, msg="err"))
+        assert mock_schedule.call_count == 0
+
+    async def test_set_alert_threshold_rejects_invalid_level(self, hass):
+        await _setup(hass)
+
+        with pytest.raises(vol.Invalid):
+            await hass.services.async_call(
+                DOMAIN,
+                "set_alert_threshold",
+                {"logger_name": "rec.logger", "events": 1, "level": "INFO"},
+                blocking=True,
+            )

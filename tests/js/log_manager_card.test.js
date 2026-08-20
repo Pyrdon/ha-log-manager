@@ -597,6 +597,61 @@ describe("LogManagerCard", () => {
     });
   });
 
+  describe("alert threshold panel", () => {
+    beforeEach(() => {
+      cardInstance._hass = {
+        states: {
+          "select.test": {
+            state: "INFO",
+            attributes: {
+              logger_name: "t.logger",
+              count_level: "WARNING",
+              alert_threshold: 5,
+              alert_level: "WARNING",
+            },
+          },
+        },
+        callService: jest.fn(),
+      };
+      cardInstance._counters = {
+        "t.logger": { warning: 2, error: 0, recent_logs: [], levels: { WARNING: 2 } },
+      };
+    });
+
+    test("renders the alert severity select and threshold input with current values", () => {
+      const html = cardInstance._renderLogPanelHtml("t.logger");
+      expect(html).toContain('class="alert-level-select"');
+      expect(html).toContain('<option value="WARNING" selected>WARNING</option>');
+      expect(html).toContain('class="alert-threshold-input"');
+      expect(html).toContain('value="5"');
+    });
+
+    test("defaults to ERROR severity and zero threshold without entity data", () => {
+      cardInstance._hass = { states: {}, callService: jest.fn() };
+      const html = cardInstance._renderLogPanelHtml("t.logger");
+      expect(html).toContain('<option value="ERROR" selected>ERROR</option>');
+      expect(html).toContain('value="0"');
+    });
+
+    test("changing either control calls set_alert_threshold with both values", () => {
+      const row = document.createElement("div");
+      row.innerHTML = cardInstance._renderLogPanelHtml("t.logger");
+      cardInstance._attachAlertHandler(row);
+
+      const sel = row.querySelector(".alert-level-select");
+      const num = row.querySelector(".alert-threshold-input");
+      num.value = "7";
+      sel.value = "ERROR";
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+
+      expect(cardInstance._hass.callService).toHaveBeenCalledWith(
+        "log_manager",
+        "set_alert_threshold",
+        { logger_name: "t.logger", events: 7, level: "ERROR" }
+      );
+    });
+  });
+
   describe("_openRecordingSetup", () => {
     let rec;
 

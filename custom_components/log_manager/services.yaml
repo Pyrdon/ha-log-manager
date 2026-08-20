@@ -65,3 +65,34 @@ set_count_level:
             - WARNING
             - ERROR
             - CRITICAL
+
+set_alert_threshold:
+  name: Set Alert Threshold
+  description: Notify when a managed logger logs at least this many counted events at or above the alert severity.
+  fields:
+    logger_name:
+      name: Logger Name
+      description: The Python logger namespace to configure.
+      example: homeassistant.components.light
+      required: true
+      selector:
+        text:
+    events:
+      name: Event Threshold
+      description: Number of qualifying counted events that triggers the notification. 0 disables the alert.
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 100000
+          mode: box
+    level:
+      name: Alert Severity
+      description: Only events at or above this severity count toward the threshold.
+      required: false
+      selector:
+        select:
+          options:
+            - WARNING
+            - ERROR
+            - CRITICAL

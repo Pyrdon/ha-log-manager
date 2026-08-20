@@ -104,6 +104,18 @@ class LogManagerCard extends HTMLElement {
     };
   }
 
+  _getAlertInfo(loggerName) {
+    const eid = this._findEntityIdByLogger(loggerName);
+    if (!eid) return { threshold: 0, level: "ERROR", disabled: true };
+    const stateObj = this._hass.states[eid];
+    const unavailable = stateObj.state === "unavailable" || stateObj.state === "unknown";
+    return {
+      threshold: stateObj.attributes.alert_threshold || 0,
+      level: stateObj.attributes.alert_level || "ERROR",
+      disabled: unavailable,
+    };
+  }
+
   _renderSeverityLine(levels) {
     const order = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"];
     const parts = [];
@@ -124,6 +136,7 @@ class LogManagerCard extends HTMLElement {
 
     const { countLevel, disabled } = this._getCountLevelInfo(loggerName);
     const countLabel = countLevel === "NOTSET" ? "all levels" : `${countLevel} and above`;
+    const alertInfo = this._getAlertInfo(loggerName);
 
     const recentLogs = stats.recent_logs || [];
     let entriesHtml = "";
@@ -155,6 +168,10 @@ class LogManagerCard extends HTMLElement {
     const countOptions = ["NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
       .map(l => `<option value="${l}"${l === countLevel ? " selected" : ""}>${l}</option>`).join("");
 
+    const alertLevels = ["WARNING", "ERROR", "CRITICAL"];
+    const alertOptions = alertLevels
+      .map(l => `<option value="${l}"${l === alertInfo.level ? " selected" : ""}>${l}</option>`).join("");
+
     return `
       <div class="log-panel">
         <div class="severity-line-row">
@@ -162,6 +179,14 @@ class LogManagerCard extends HTMLElement {
           <label class="count-level-row" title="Only events at or above this level are counted for the badges and this panel">
             Count from:
             <select class="count-level-select" data-logger="${this._escapeAttr(loggerName)}"${disabled ? " disabled" : ""}>${countOptions}</select>
+          </label>
+        </div>
+        <div class="alert-line-row">
+          <label class="alert-row" title="Notify once when this many counted events at or above the alert severity arrive (0 disables). Only events counted for this row qualify.">
+            Alert:
+            <select class="alert-level-select" data-logger="${this._escapeAttr(loggerName)}"${disabled ? " disabled" : ""}>${alertOptions}</select>
+            <span>&ge;</span>
+            <input class="alert-threshold-input" type="number" min="0" max="100000" step="1" value="${alertInfo.threshold}" data-logger="${this._escapeAttr(loggerName)}"${disabled ? " disabled" : ""}>
           </label>
         </div>
         <div class="log-entries">${entriesHtml}</div>
@@ -289,6 +314,37 @@ class LogManagerCard extends HTMLElement {
     });
     // Prevent select interaction from toggling expand.
     clone.addEventListener("click", (e) => e.stopPropagation());
+  }
+
+  _attachAlertHandler(row) {
+    const send = () => {
+      const sel = row.querySelector(".alert-level-select");
+      const num = row.querySelector(".alert-threshold-input");
+      if (!sel || !num) return;
+      const loggerName = sel.dataset.logger;
+      if (!loggerName) return;
+      const count = Math.max(0, parseInt(num.value, 10) || 0);
+      this._hass.callService("log_manager", "set_alert_threshold", {
+        logger_name: loggerName,
+        events: count,
+        level: sel.value
+      });
+    };
+    // Remove stale listeners to prevent duplicate handler accumulation.
+    row.querySelectorAll(".alert-level-select, .alert-threshold-input").forEach(el => {
+      const clone = el.cloneNode(true);
+      el.replaceWith(clone);
+    });
+    const sel = row.querySelector(".alert-level-select");
+    const num = row.querySelector(".alert-threshold-input");
+    if (sel) {
+      sel.addEventListener("change", send);
+      sel.addEventListener("click", (e) => e.stopPropagation());
+    }
+    if (num) {
+      num.addEventListener("change", send);
+      num.addEventListener("click", (e) => e.stopPropagation());
+    }
   }
 
   _attachCopyPanelHandler(row) {
@@ -617,6 +673,46 @@ class LogManagerCard extends HTMLElement {
         }
 
         select.count-level-select:disabled {
+          opacity: 0.5;
+          cursor: default;
+        }
+
+        .alert-line-row {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          margin-bottom: 6px;
+          min-height: 22px;
+        }
+
+        .alert-row {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 11px;
+          color: var(--secondary-text-color);
+        }
+
+        select.alert-level-select,
+        input.alert-threshold-input {
+          padding: 2px 6px;
+          border-radius: 4px;
+          border: 1px solid var(--divider-color);
+          font-size: 11px;
+          background: var(--card-background-color);
+          color: var(--primary-text-color);
+        }
+
+        select.alert-level-select {
+          cursor: pointer;
+        }
+
+        input.alert-threshold-input {
+          width: 64px;
+        }
+
+        select.alert-level-select:disabled,
+        input.alert-threshold-input:disabled {
           opacity: 0.5;
           cursor: default;
         }
@@ -1727,6 +1823,7 @@ select.level-select {
         this._attachResetHandler(row);
         this._attachCopyPanelHandler(row);
         this._attachCountLevelHandler(row);
+        this._attachAlertHandler(row);
         this._updateRecordingCountBadge(
           row, actualLoggerName,
           this._recordingCounts[actualLoggerName] || 0,
@@ -1768,6 +1865,7 @@ select.level-select {
               this._attachResetHandler(row);
               this._attachCopyPanelHandler(row);
               this._attachCountLevelHandler(row);
+              this._attachAlertHandler(row);
             }
           } else {
             row.insertAdjacentHTML("beforeend", panelHtml);
@@ -1775,6 +1873,7 @@ select.level-select {
             this._attachResetHandler(row);
             this._attachCopyPanelHandler(row);
             this._attachCountLevelHandler(row);
+            this._attachAlertHandler(row);
           }
         } else if (panel) {
           panel.remove();

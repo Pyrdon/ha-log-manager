@@ -8,6 +8,7 @@ LOG_LEVELS_LIST = ["NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 # Per-logger options (storage schema v3).
 DEFAULT_COUNT_LEVEL = "WARNING"
 ALERT_DISABLED = 0
+DEFAULT_ALERT_LEVEL = "ERROR"
 
 
 def match_managed_logger(name: str, managed: Iterable[str]) -> str | None:
