@@ -10,6 +10,7 @@ from .const import (
     DEFAULT_COUNT_LEVEL,
     DOMAIN,
     LOG_LEVELS_LIST as LOG_LEVELS,
+    record_audit,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -123,12 +124,20 @@ class LogLevelSelect(SelectEntity):
                 "alert_threshold", ALERT_DISABLED
             ),
             "alert_level": stored_info.get("alert_level", DEFAULT_ALERT_LEVEL),
+            "audit": stored_info.get("audit", []),
         }
 
     async def async_select_option(self, option: str) -> None:
         """
         Handle the user clicking a new option in the HA frontend.
         """
+
+        old_level = self._attr_current_option or "NOTSET"
+
+        if option == old_level:
+            # Re-selecting the current level changes nothing: skip the
+            # setLevel call, the audit entry and the storage write.
+            return
 
         # Update the UI state.
         self._attr_current_option = option
@@ -144,6 +153,7 @@ class LogLevelSelect(SelectEntity):
 
         # Update storage with the new log level and execute a save.
         stored_info = self.hass.data[DOMAIN]["loggers"].get(self._logger_name, {})
+        record_audit(stored_info, old_level, option, "ui")
         stored_info["level"] = option
         self.hass.data[DOMAIN]["loggers"][self._logger_name] = stored_info
 

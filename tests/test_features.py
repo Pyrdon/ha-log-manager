@@ -1,7 +1,7 @@
 """Tests for the v3 storage schema migration."""
 
 import logging
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import voluptuous as vol
@@ -17,6 +17,7 @@ from custom_components.log_manager.const import (
     ALERT_DISABLED,
     DEFAULT_COUNT_LEVEL,
 )
+from custom_components.log_manager.select import LogLevelSelect
 
 
 STORE_DATA = {
@@ -296,3 +297,33 @@ class TestAlerts:
                 {"logger_name": "rec.logger", "events": 1, "level": "INFO"},
                 blocking=True,
             )
+
+
+class TestSelectBehaviour:
+    async def test_select_records_audit(self, hass):
+        hass.data[DOMAIN] = {
+            "loggers": {"a": {"friendly_name": "A", "level": "NOTSET"}},
+            "save_data": AsyncMock(),
+        }
+        entity = LogLevelSelect(hass, "a", "A")
+
+        with patch.object(entity, "async_write_ha_state"):
+            await entity.async_select_option("INFO")
+
+        audit = hass.data[DOMAIN]["loggers"]["a"]["audit"]
+        assert audit[0]["source"] == "ui"
+        assert audit[0]["old_level"] == "NOTSET"
+        assert audit[0]["new_level"] == "INFO"
+
+    def test_record_audit_caps_entries_most_recent_first(self):
+        from custom_components.log_manager.const import MAX_AUDIT, record_audit
+
+        info = {}
+        for i in range(MAX_AUDIT + 2):
+            record_audit(info, f"L{i}", f"L{i + 1}", "ui")
+
+        audit = info["audit"]
+        assert len(audit) == MAX_AUDIT
+        assert audit[0]["new_level"] == f"L{MAX_AUDIT + 2}"
+        assert audit[-1]["new_level"] == "L3"
+        assert all("ts" in entry for entry in audit)

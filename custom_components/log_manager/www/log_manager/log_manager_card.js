@@ -1,4 +1,9 @@
 class LogManagerCard extends HTMLElement {
+  // Audit-trail display policy. Backend keeps AUDIT_KEEP entries per logger
+  // (see MAX_AUDIT in const.py); the panel shows the newest AUDIT_SHOW.
+  static AUDIT_KEEP = 5;
+  static AUDIT_SHOW = 3;
+
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
@@ -116,6 +121,34 @@ class LogManagerCard extends HTMLElement {
     };
   }
 
+  _getAuditEntries(loggerName) {
+    const eid = this._findEntityIdByLogger(loggerName);
+    if (!eid) return [];
+    const audit = this._hass.states[eid].attributes.audit || [];
+    return Array.isArray(audit)
+      ? audit.slice(0, LogManagerCard.AUDIT_KEEP)
+      : [];
+  }
+
+  _renderAuditLine(entries) {
+    if (!entries || entries.length === 0) return "";
+    const sourceLabels = { ui: "UI" };
+    const items = entries.slice(0, LogManagerCard.AUDIT_SHOW).map(a => {
+      const at = new Date((a.ts || 0) * 1000);
+      const timeOpts = { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false };
+      const when = at.toLocaleTimeString(undefined, timeOpts);
+      const whenFull = at.toLocaleString(undefined, {
+        year: "numeric", month: "2-digit", day: "2-digit",
+        ...timeOpts,
+      });
+      const who = sourceLabels[a.source] || a.source || "unknown";
+      const from = this._escapeHtml(a.old_level || "");
+      const to = this._escapeHtml(a.new_level || "");
+      return `<span title="${this._escapeAttr(`Changed by ${who} at ${whenFull}`)}">by ${this._escapeHtml(who)} ${from} \u2192 ${to}</span>`;
+    });
+    return `<div class="audit-line"><span class="audit-label">Level changes:</span> ${items.join(" · ")}</div>`;
+  }
+
   _renderSeverityLine(levels) {
     const order = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"];
     const parts = [];
@@ -189,6 +222,7 @@ class LogManagerCard extends HTMLElement {
             <input class="alert-threshold-input" type="number" min="0" max="100000" step="1" value="${alertInfo.threshold}" data-logger="${this._escapeAttr(loggerName)}"${disabled ? " disabled" : ""}>
           </label>
         </div>
+        ${this._renderAuditLine(this._getAuditEntries(loggerName))}
         <div class="log-entries">${entriesHtml}</div>
         <div class="log-disclaimer" title="This panel is fed by the counter badges, which capture events at or above the counting level for every logger regardless of its configured level. It does not affect or reflect recording.">This panel shows ${this._escapeHtml(countLabel)}, independent of the configured level.</div>
         <div style="display: flex; gap: 8px; margin-top: 8px;">
@@ -715,6 +749,16 @@ class LogManagerCard extends HTMLElement {
         input.alert-threshold-input:disabled {
           opacity: 0.5;
           cursor: default;
+        }
+
+        .audit-line {
+          font-size: 11px;
+          color: var(--secondary-text-color);
+          margin-bottom: 6px;
+        }
+
+        .audit-label {
+          font-weight: 600;
         }
 
         .log-msg {

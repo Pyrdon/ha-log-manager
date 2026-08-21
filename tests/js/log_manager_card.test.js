@@ -652,6 +652,57 @@ describe("LogManagerCard", () => {
     });
   });
 
+  describe("audit trail panel", () => {
+    beforeEach(() => {
+      cardInstance._hass = {
+        states: {
+          "select.test": {
+            state: "INFO",
+            attributes: {
+              logger_name: "t.logger",
+              count_level: "WARNING",
+              alert_threshold: 0,
+              alert_level: "ERROR",
+              audit: [
+                { ts: 1700000000, source: "ui", old_level: "NOTSET", new_level: "INFO" },
+                { ts: 1699999900, source: "ui", old_level: "INFO", new_level: "DEBUG" },
+              ],
+            },
+          },
+        },
+        callService: jest.fn(),
+      };
+      cardInstance._counters = {
+        "t.logger": { warning: 0, error: 0, recent_logs: [], levels: {} },
+      };
+    });
+
+    test("renders a history line with source labels and levels", () => {
+      const html = cardInstance._renderLogPanelHtml("t.logger");
+      expect(html).toContain("Level changes:");
+      expect(html).toContain("by UI NOTSET");
+      expect(html).toContain("by UI INFO");
+    });
+
+    test("omits the history line when there are no entries", () => {
+      cardInstance._hass.states["select.test"].attributes.audit = [];
+      const html = cardInstance._renderLogPanelHtml("t.logger");
+      expect(html).not.toContain("Level changes:");
+    });
+
+    test("shows at most three entries", () => {
+      cardInstance._hass.states["select.test"].attributes.audit = [
+        { ts: 1, source: "ui", old_level: "A", new_level: "B" },
+        { ts: 2, source: "ui", old_level: "B", new_level: "C" },
+        { ts: 3, source: "ui", old_level: "C", new_level: "D" },
+        { ts: 4, source: "ui", old_level: "D", new_level: "E" },
+      ];
+      const html = cardInstance._renderLogPanelHtml("t.logger");
+      expect(html).toContain("A \u2192 B");
+      expect(html).not.toContain("D \u2192 E");
+    });
+  });
+
   describe("_openRecordingSetup", () => {
     let rec;
 
