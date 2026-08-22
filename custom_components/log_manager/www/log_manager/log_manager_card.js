@@ -132,7 +132,7 @@ class LogManagerCard extends HTMLElement {
 
   _renderAuditLine(entries) {
     if (!entries || entries.length === 0) return "";
-    const sourceLabels = { ui: "UI" };
+    const sourceLabels = { ui: "UI", core: "Home Assistant" };
     const items = entries.slice(0, LogManagerCard.AUDIT_SHOW).map(a => {
       const at = new Date((a.ts || 0) * 1000);
       const timeOpts = { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false };
@@ -1081,12 +1081,68 @@ select.level-select {
           vertical-align: middle;
         }
 
+        .pinned-tag {
+          display: inline-flex;
+          align-items: center;
+          padding: 1px 7px;
+          border-radius: 9px;
+          border: 1px solid var(--divider-color);
+          color: var(--secondary-text-color);
+          font-size: 10px;
+          font-weight: 600;
+          margin-right: 4px;
+          flex-shrink: 0;
+          vertical-align: middle;
+        }
+
         .btn-record {
           color: var(--error-color) !important;
         }
 
         .btn-record:hover {
           background: rgba(244, 67, 54, 0.08) !important;
+        }
+
+        .btn-view-recording {
+          color: var(--primary-color) !important;
+          font-weight: 600;
+        }
+
+        .btn-view-recording:hover {
+          background: rgba(var(--rgb-primary-color), 0.08) !important;
+        }
+
+        .context-menu {
+          position: fixed;
+          z-index: 1000000000;
+          background: var(--card-background-color);
+          border: 1px solid var(--divider-color);
+          border-radius: 6px;
+          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+          padding: 4px;
+          min-width: 160px;
+        }
+
+        .context-menu button {
+          display: block;
+          width: 100%;
+          text-align: left;
+          background: none;
+          border: none;
+          color: var(--primary-text-color);
+          padding: 6px 10px;
+          font-size: 13px;
+          border-radius: 4px;
+          cursor: pointer;
+        }
+
+        .context-menu button:hover:not(:disabled) {
+          background: rgba(var(--rgb-primary-text-color), 0.08);
+        }
+
+        .context-menu button:disabled {
+          opacity: 0.5;
+          cursor: default;
         }
 
         .dialog-overlay {
@@ -1744,6 +1800,8 @@ select.level-select {
       const actualLoggerName = stateObj.attributes.logger_name || "Unknown";
       const displayName = stateObj.attributes.friendly_name || eid;
       const currentLevel = stateObj.state;
+      const isPinned = !!stateObj.attributes.core_pinned;
+      const pinnedTitle = "Managed by Home Assistant — set via YAML logger:, the integration's debug toggle, or the logger.set_level service.";
       const colors = this._levelColors(currentLevel);
       const badgeStats = this._counters[actualLoggerName];
       const curWarn = badgeStats ? (badgeStats.warning || 0) : 0;
@@ -1764,6 +1822,8 @@ select.level-select {
 
         const selectHtml = isUnavailable
           ? `<select class="level-select" disabled><option>Unavailable</option></select>`
+          : isPinned
+          ? `<select class="level-select" disabled title="${this._escapeAttr(pinnedTitle)}">${selectOptions}</select>`
           : `<select class="level-select">${selectOptions}</select>`;
 
         const counterBadgeHtml = this._renderCounterBadgeHtml(actualLoggerName);
@@ -1777,10 +1837,13 @@ select.level-select {
         const recordingTag = isRecording
           ? `<span class="recording-tag" title="Recording at ${this._escapeAttr(recordingLevel)}">${recordingLevel.charAt(0)}</span>`
           : "";
+        const pinnedTag = isPinned
+          ? `<span class="pinned-tag" title="${this._escapeAttr(pinnedTitle)}">Pinned</span>`
+          : "";
 
         row.innerHTML = `
           <div class="log-name ${isUnavailable ? "unavailable" : ""}">
-            <div style="font-weight: 500;">${recordingTag}${this._escapeHtml(displayName)}</div>
+            <div style="font-weight: 500;">${recordingTag}${pinnedTag}${this._escapeHtml(displayName)}</div>
             <div style="color: var(--secondary-text-color); font-size: 12px; margin-top: 2px;">
               ${this._escapeHtml(actualLoggerName)}
             </div>
@@ -1943,6 +2006,34 @@ select.level-select {
           }
         }
 
+        // Update pinned tag and selector state when core pinning changes.
+        if (prev.pinned !== isPinned) {
+          const nameDivFirst = row.querySelector(".log-name > div:first-child");
+          if (nameDivFirst) {
+            const existingPin = nameDivFirst.querySelector(".pinned-tag");
+            if (isPinned && !existingPin) {
+              const tag = document.createElement("span");
+              tag.className = "pinned-tag";
+              tag.textContent = "Pinned";
+              tag.title = pinnedTitle;
+              nameDivFirst.insertBefore(tag, nameDivFirst.firstChild);
+            } else if (!isPinned && existingPin) {
+              existingPin.remove();
+            }
+          }
+          if (!isUnavailable) {
+            const select = row.querySelector(".level-select");
+            if (select) {
+              select.disabled = isPinned;
+              if (isPinned) {
+                select.setAttribute("title", pinnedTitle);
+              } else {
+                select.removeAttribute("title");
+              }
+            }
+          }
+        }
+
         // Update recording count badge when count or recording state changes.
         const recordingCount = this._recordingCounts[actualLoggerName] || 0;
         if (prev.recording !== isRecording || prev.recordingCount !== recordingCount) {
@@ -1955,6 +2046,7 @@ select.level-select {
         level: currentLevel,
         warningCount: curWarn,
         errorCount: curErr,
+        pinned: isPinned,
         recording: this._recordingState === "recording" && this._recordingLoggers.includes(actualLoggerName),
         recordingCount: this._recordingCounts[actualLoggerName] || 0,
       };

@@ -703,6 +703,84 @@ describe("LogManagerCard", () => {
     });
   });
 
+  describe("core-pinned rows", () => {
+    const pinnedTitle = "Managed by Home Assistant";
+
+    beforeEach(() => {
+      cardInstance._hass = {
+        states: {
+          "select.pinned": {
+            state: "DEBUG",
+            attributes: {
+              logger_name: "p.logger",
+              friendly_name: "Pinned",
+              count_level: "WARNING",
+              core_pinned: true,
+              options: ["NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+            },
+          },
+          "select.free": {
+            state: "INFO",
+            attributes: {
+              logger_name: "f.logger",
+              friendly_name: "Free",
+              count_level: "WARNING",
+              core_pinned: false,
+              options: ["NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+            },
+          },
+        },
+        callService: jest.fn(),
+      };
+      cardInstance._counters = {};
+      cardInstance._prevRowStates = {};
+      cardInstance._activeList = document.createElement("div");
+    });
+
+    test("pinned rows render a disabled selector with a tooltip", () => {
+      cardInstance._expandedLogger = null;
+      cardInstance._updateActiveList();
+      const row = cardInstance._activeList.querySelector(
+        '.log-row[data-entity-id="select.pinned"]'
+      );
+      const select = row.querySelector(".level-select");
+      expect(select.disabled).toBe(true);
+      expect(select.title).toContain(pinnedTitle);
+      expect(row.querySelector(".pinned-tag").textContent).toBe("Pinned");
+    });
+
+    test("unpinned rows keep an enabled selector and no tag", () => {
+      cardInstance._expandedLogger = null;
+      cardInstance._updateActiveList();
+      const row = cardInstance._activeList.querySelector(
+        '.log-row[data-entity-id="select.free"]'
+      );
+      expect(row.querySelector(".level-select").disabled).toBe(false);
+      expect(row.querySelector(".pinned-tag")).toBeNull();
+    });
+
+    test("flipping the pin updates the row in place without rebuilding it", () => {
+      cardInstance._expandedLogger = null;
+      cardInstance._updateActiveList();
+      const before = cardInstance._activeList.querySelector(
+        '.log-row[data-entity-id="select.free"]'
+      );
+      expect(before.querySelector(".pinned-tag")).toBeNull();
+
+      cardInstance._hass.states["select.free"].attributes.core_pinned = true;
+      cardInstance._updateActiveList();
+
+      const after = cardInstance._activeList.querySelector(
+        '.log-row[data-entity-id="select.free"]'
+      );
+      expect(after).toBe(before);
+      expect(after.querySelector(".pinned-tag").textContent).toBe("Pinned");
+      const select = after.querySelector(".level-select");
+      expect(select.disabled).toBe(true);
+      expect(select.title).toContain(pinnedTitle);
+    });
+  });
+
   describe("_openRecordingSetup", () => {
     let rec;
 

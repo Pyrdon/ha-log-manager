@@ -19,20 +19,21 @@ async def test_entity_initialization(hass):
     assert entity.unique_id == "log_manager_my_module"
     attrs = entity.extra_state_attributes
     assert attrs["logger_name"] == "my.module"
+    assert attrs["core_pinned"] is False
     assert attrs["count_level"] == "WARNING"
     assert attrs["alert_threshold"] == 0
     assert attrs["alert_level"] == "ERROR"
     assert attrs["audit"] == []
 
 
-async def test_entity_init_defaults_to_info_when_no_stored_level(hass):
+async def test_entity_init_defaults_to_notset_when_no_stored_level(hass):
     hass.data[DOMAIN] = {
         "loggers": {"new.logger": {"friendly_name": "New"}},
     }
 
     entity = LogLevelSelect(hass, "new.logger", "New")
 
-    assert entity.current_option == "INFO"
+    assert entity.current_option == "NOTSET"
 
 
 async def test_entity_init_with_missing_loggers_data(hass):
@@ -40,7 +41,7 @@ async def test_entity_init_with_missing_loggers_data(hass):
 
     entity = LogLevelSelect(hass, "orphan", "Orphan")
 
-    assert entity.current_option == "INFO"
+    assert entity.current_option == "NOTSET"
     assert entity.unique_id == "log_manager_orphan"
 
 

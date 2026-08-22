@@ -1,6 +1,7 @@
 """Tests for the v3 storage schema migration."""
 
 import logging
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,6 +17,10 @@ from custom_components.log_manager import (
 from custom_components.log_manager.const import (
     ALERT_DISABLED,
     DEFAULT_COUNT_LEVEL,
+)
+from custom_components.log_manager.core_sync import (
+    is_core_pinned,
+    reconcile_with_core,
 )
 from custom_components.log_manager.select import LogLevelSelect
 
@@ -327,3 +332,105 @@ class TestSelectBehaviour:
         assert audit[0]["new_level"] == f"L{MAX_AUDIT + 2}"
         assert audit[-1]["new_level"] == "L3"
         assert all("ts" in entry for entry in audit)
+
+
+class TestCoreSync:
+    def test_is_core_pinned(self, hass):
+        hass.data["logger"] = SimpleNamespace(overrides={"pinned.x": 10})
+        assert is_core_pinned(hass, "pinned.x")
+        assert not is_core_pinned(hass, "other.x")
+
+        hass.data["logger"] = None
+        assert not is_core_pinned(hass, "pinned.x")
+
+    async def test_reconcile_adopts_core_pins(self, hass):
+        save_data = AsyncMock()
+        hass.data[DOMAIN] = {
+            "loggers": {"pinned": {"friendly_name": "P", "level": "NOTSET"}},
+            "save_data": save_data,
+        }
+        hass.data["logger"] = SimpleNamespace(overrides={"pinned": 10})
+
+        with patch(
+            "custom_components.log_manager.core_sync.async_dispatcher_send"
+        ) as mock_dispatch:
+            reconcile_with_core(hass)
+
+        assert hass.data[DOMAIN]["loggers"]["pinned"]["level"] == "DEBUG"
+        mock_dispatch.assert_called_once()
+
+    async def test_reconcile_records_core_audit(self, hass):
+        hass.data[DOMAIN] = {
+            "loggers": {"pinned": {"friendly_name": "P", "level": "NOTSET"}},
+            "save_data": AsyncMock(),
+        }
+        hass.data["logger"] = SimpleNamespace(overrides={"pinned": 10})
+
+        with patch(
+            "custom_components.log_manager.core_sync.async_dispatcher_send"
+        ):
+            reconcile_with_core(hass)
+
+        audit = hass.data[DOMAIN]["loggers"]["pinned"]["audit"]
+        assert audit[0]["source"] == "core"
+        assert audit[0]["old_level"] == "NOTSET"
+        assert audit[0]["new_level"] == "DEBUG"
+
+    async def test_reconcile_no_change_skips_save_and_dispatch(self, hass):
+        save_data = AsyncMock()
+        hass.data[DOMAIN] = {
+            "loggers": {"pinned": {"friendly_name": "P", "level": "DEBUG"}},
+            "save_data": save_data,
+        }
+        hass.data["logger"] = SimpleNamespace(overrides={"pinned": 10})
+
+        with patch(
+            "custom_components.log_manager.core_sync.async_dispatcher_send"
+        ) as mock_dispatch:
+            reconcile_with_core(hass)
+
+        mock_dispatch.assert_not_called()
+        save_data.assert_not_awaited()
+
+    async def test_logging_changed_event_triggers_reconcile(self, hass):
+        await _setup(hass)
+        hass.data[DOMAIN]["loggers"]["rec.logger"] = {
+            "friendly_name": "Rec Logger",
+            "level": "NOTSET",
+        }
+        hass.data["logger"] = SimpleNamespace(overrides={"rec.logger": 20})
+
+        hass.bus.async_fire("logging_changed")
+        await hass.async_block_till_done()
+
+        assert hass.data[DOMAIN]["loggers"]["rec.logger"]["level"] == "INFO"
+
+    async def test_core_sync_unsub_stops_reconcile(self, hass):
+        from custom_components.log_manager.core_sync import register_core_sync
+
+        hass.data[DOMAIN] = {
+            "loggers": {"pinned": {"friendly_name": "P", "level": "NOTSET"}},
+            "save_data": AsyncMock(),
+        }
+        hass.data["logger"] = SimpleNamespace(overrides={"pinned": 10})
+
+        unsub = register_core_sync(hass)
+        unsub()
+
+        hass.bus.async_fire("logging_changed")
+        await hass.async_block_till_done()
+
+        assert hass.data[DOMAIN]["loggers"]["pinned"]["level"] == "NOTSET"
+
+    async def test_select_refused_when_pinned(self, hass):
+        hass.data[DOMAIN] = {
+            "loggers": {"pinned.log": {"friendly_name": "P", "level": "NOTSET"}}
+        }
+        hass.data["logger"] = SimpleNamespace(overrides={"pinned.log": 40})
+
+        entity = LogLevelSelect(hass, "pinned.log", "P")
+        await entity.async_select_option("INFO")
+
+        assert entity.current_option == "NOTSET"
+        assert hass.data[DOMAIN]["loggers"]["pinned.log"]["level"] == "NOTSET"
+        assert "audit" not in hass.data[DOMAIN]["loggers"]["pinned.log"]

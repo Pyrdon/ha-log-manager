@@ -26,6 +26,12 @@ from .const import (
     STORAGE_VERSION,
     match_managed_logger,
 )
+from .core_sync import (
+    _core_overrides,
+    is_core_pinned,
+    reconcile_with_core,
+    register_core_sync,
+)
 from .recording import (
     async_register_recording_commands,
     async_stop_recording_session,
@@ -384,9 +390,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return
 
         # Register the new configuration in memory and storage.
+        # A namespace already pinned by core starts at the pinned level so
+        # the new row shows reality instead of an unappliable NOTSET.
+        initial_level = "NOTSET"
+        if is_core_pinned(hass, logger_name):
+            initial_level = _core_overrides(hass)[logger_name]
+            _LOGGER.info(
+                "New logger '%s' starts at core-pinned level %s.",
+                logger_name, initial_level,
+            )
         stored_loggers[logger_name] = {
             "friendly_name": friendly_name,
-            "level": "NOTSET",
+            "level": initial_level,
             "count_level": DEFAULT_COUNT_LEVEL,
             "alert_threshold": ALERT_DISABLED,
             "alert_level": DEFAULT_ALERT_LEVEL,
@@ -521,6 +536,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Size the counter handler to the lowest configured counting level.
     counter_handler.update_level()
 
+    # Mirror core logger overrides: adopt pins and refuse edits on those namespaces.
+    hass.data[DOMAIN]["core_sync_unsub"] = register_core_sync(hass)
+    reconcile_with_core(hass)
+
     # Forward the setup to the select platform so it can create the entities.
     await hass.config_entries.async_forward_entry_setups(entry, ["select"])
 
@@ -541,6 +560,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handler = hass.data[DOMAIN].pop("counter_handler", None)
         if handler:
             logging.root.removeHandler(handler)
+
+        # Remove the core logger override sync listener.
+        core_sync_unsub = hass.data[DOMAIN].pop("core_sync_unsub", None)
+        if core_sync_unsub:
+            core_sync_unsub()
 
         hass.data[DOMAIN].pop("loggers", None)
         hass.data[DOMAIN].pop("counters", None)
