@@ -89,8 +89,25 @@ class LogManagerCard extends HTMLElement {
     return html;
   }
 
-  _findEntityIdByLogger(loggerName) {
-    if (!this._hass) return null;
+  _effectiveChipInfo(stateObj, currentLevel, isUnavailable) {
+    if (isUnavailable || currentLevel !== "NOTSET") return null;
+    const effectiveLevel = stateObj.attributes.effective_level;
+    if (!effectiveLevel) return null;
+    const effectiveSource = stateObj.attributes.effective_source;
+    const sourceText = (!effectiveSource || effectiveSource === "root")
+      ? "Root default"
+      : `Inherited from ${effectiveSource}`;
+    return { effectiveLevel, sourceText };
+  }
+
+  _renderEffectiveChip(stateObj, currentLevel, isUnavailable) {
+    const info = this._effectiveChipInfo(stateObj, currentLevel, isUnavailable);
+    if (!info) return "";
+    const colors = this._levelColors(info.effectiveLevel);
+    return `<div class="effective-line" title="${this._escapeAttr(info.sourceText)}">effective: <span style="color: ${colors.color};">${this._escapeHtml(info.effectiveLevel)}</span></div>`;
+  }
+
+  _findEntityIdByLogger(loggerName) {    if (!this._hass) return null;
     const eid = Object.keys(this._hass.states).find(id => {
       if (!id.startsWith("select.")) return false;
       return this._hass.states[id].attributes.logger_name === loggerName;
@@ -1095,6 +1112,12 @@ select.level-select {
           vertical-align: middle;
         }
 
+        .effective-line {
+          font-size: 11px;
+          color: var(--secondary-text-color);
+          margin-top: 2px;
+        }
+
         .btn-record {
           color: var(--error-color) !important;
         }
@@ -1802,6 +1825,8 @@ select.level-select {
       const currentLevel = stateObj.state;
       const isPinned = !!stateObj.attributes.core_pinned;
       const pinnedTitle = "Managed by Home Assistant — set via YAML logger:, the integration's debug toggle, or the logger.set_level service.";
+      const chipInfo = this._effectiveChipInfo(stateObj, currentLevel, isUnavailable);
+      const chipSig = chipInfo ? `${chipInfo.effectiveLevel}|${chipInfo.sourceText}` : "";
       const colors = this._levelColors(currentLevel);
       const badgeStats = this._counters[actualLoggerName];
       const curWarn = badgeStats ? (badgeStats.warning || 0) : 0;
@@ -1840,12 +1865,14 @@ select.level-select {
         const pinnedTag = isPinned
           ? `<span class="pinned-tag" title="${this._escapeAttr(pinnedTitle)}">Pinned</span>`
           : "";
+        const effectiveChip = this._renderEffectiveChip(stateObj, currentLevel, isUnavailable);
 
         row.innerHTML = `
           <div class="log-name ${isUnavailable ? "unavailable" : ""}">
             <div style="font-weight: 500;">${recordingTag}${pinnedTag}${this._escapeHtml(displayName)}</div>
             <div style="color: var(--secondary-text-color); font-size: 12px; margin-top: 2px;">
               ${this._escapeHtml(actualLoggerName)}
+              ${effectiveChip}
             </div>
           </div>
           <div class="log-controls-wrapper">
@@ -2034,6 +2061,25 @@ select.level-select {
           }
         }
 
+        // Update the effective-level chip when its content changes.
+        if (prev.effective !== chipSig) {
+          const pathDiv = row.querySelector(".log-name > div:last-child");
+          if (pathDiv) {
+            const existing = pathDiv.querySelector(".effective-line");
+            if (chipInfo && !existing) {
+              pathDiv.insertAdjacentHTML(
+                "beforeend", this._renderEffectiveChip(stateObj, currentLevel, isUnavailable)
+              );
+            } else if (!chipInfo && existing) {
+              existing.remove();
+            } else if (chipInfo && existing) {
+              const fresh = document.createElement("div");
+              fresh.innerHTML = this._renderEffectiveChip(stateObj, currentLevel, isUnavailable);
+              existing.replaceWith(fresh.firstChild);
+            }
+          }
+        }
+
         // Update recording count badge when count or recording state changes.
         const recordingCount = this._recordingCounts[actualLoggerName] || 0;
         if (prev.recording !== isRecording || prev.recordingCount !== recordingCount) {
@@ -2047,6 +2093,7 @@ select.level-select {
         warningCount: curWarn,
         errorCount: curErr,
         pinned: isPinned,
+        effective: chipSig,
         recording: this._recordingState === "recording" && this._recordingLoggers.includes(actualLoggerName),
         recordingCount: this._recordingCounts[actualLoggerName] || 0,
       };

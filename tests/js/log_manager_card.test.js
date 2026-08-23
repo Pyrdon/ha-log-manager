@@ -781,6 +781,83 @@ describe("LogManagerCard", () => {
     });
   });
 
+  describe("effective-level chip", () => {
+    beforeEach(() => {
+      cardInstance._hass = {
+        states: {
+          "select.inherit": {
+            state: "NOTSET",
+            attributes: {
+              logger_name: "i.logger",
+              friendly_name: "Inherit",
+              count_level: "WARNING",
+              core_pinned: false,
+              effective_level: "DEBUG",
+              effective_source: "i.parent",
+              options: ["NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+            },
+          },
+          "select.explicit": {
+            state: "INFO",
+            attributes: {
+              logger_name: "e.logger",
+              friendly_name: "Explicit",
+              count_level: "WARNING",
+              core_pinned: false,
+              effective_level: "INFO",
+              effective_source: null,
+              options: ["NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+            },
+          },
+        },
+        callService: jest.fn(),
+      };
+      cardInstance._counters = {};
+      cardInstance._prevRowStates = {};
+      cardInstance._activeList = document.createElement("div");
+    });
+
+    test("NOTSET rows show the effective level with its source", () => {
+      cardInstance._expandedLogger = null;
+      cardInstance._updateActiveList();
+      const row = cardInstance._activeList.querySelector(
+        '.log-row[data-entity-id="select.inherit"]'
+      );
+      const chip = row.querySelector(".effective-line");
+      expect(chip).not.toBeNull();
+      expect(chip.textContent).toContain("effective:");
+      expect(chip.textContent).toContain("DEBUG");
+      expect(chip.title).toContain("i.parent");
+    });
+
+    test("explicit-level rows show no chip", () => {
+      cardInstance._expandedLogger = null;
+      cardInstance._updateActiveList();
+      const row = cardInstance._activeList.querySelector(
+        '.log-row[data-entity-id="select.explicit"]'
+      );
+      expect(row.querySelector(".effective-line")).toBeNull();
+    });
+
+    test("changing the effective level updates the chip in place", () => {
+      cardInstance._expandedLogger = null;
+      cardInstance._updateActiveList();
+      const before = cardInstance._activeList.querySelector(
+        '.log-row[data-entity-id="select.inherit"]'
+      );
+      expect(before.querySelector(".effective-line").textContent).toContain("DEBUG");
+
+      cardInstance._hass.states["select.inherit"].attributes.effective_level = "INFO";
+      cardInstance._updateActiveList();
+
+      const after = cardInstance._activeList.querySelector(
+        '.log-row[data-entity-id="select.inherit"]'
+      );
+      expect(after).toBe(before);
+      expect(after.querySelector(".effective-line").textContent).toContain("INFO");
+    });
+  });
+
   describe("_openRecordingSetup", () => {
     let rec;
 

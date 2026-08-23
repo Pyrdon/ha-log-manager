@@ -17,6 +17,7 @@ from custom_components.log_manager import (
 from custom_components.log_manager.const import (
     ALERT_DISABLED,
     DEFAULT_COUNT_LEVEL,
+    effective_level_source,
 )
 from custom_components.log_manager.core_sync import (
     is_core_pinned,
@@ -332,6 +333,32 @@ class TestSelectBehaviour:
         assert audit[0]["new_level"] == f"L{MAX_AUDIT + 2}"
         assert audit[-1]["new_level"] == "L3"
         assert all("ts" in entry for entry in audit)
+
+
+class TestEffectiveLevel:
+    def test_own_level(self):
+        logging.getLogger("eff.own").setLevel(logging.INFO)
+        level, source = effective_level_source("eff.own")
+        assert level == "INFO"
+        assert source is None
+
+    def test_inherited_from_ancestor(self):
+        logging.getLogger("eff.parent").setLevel(logging.DEBUG)
+        level, source = effective_level_source("eff.parent.child")
+        assert level == "DEBUG"
+        assert source == "eff.parent"
+
+    def test_root_fallback(self):
+        root = logging.getLogger()
+        original_level = root.level
+        root.setLevel(logging.WARNING)
+        logging.getLogger("eff.unset.deep").setLevel(logging.NOTSET)
+        try:
+            level, source = effective_level_source("eff.unset.deep")
+            assert level == "WARNING"
+            assert source == "root"
+        finally:
+            root.setLevel(original_level)
 
 
 class TestCoreSync:

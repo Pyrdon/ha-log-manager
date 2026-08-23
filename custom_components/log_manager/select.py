@@ -10,6 +10,7 @@ from .const import (
     DEFAULT_COUNT_LEVEL,
     DOMAIN,
     LOG_LEVELS_LIST as LOG_LEVELS,
+    effective_level_source,
     record_audit,
 )
 from .core_sync import is_core_pinned
@@ -139,9 +140,14 @@ class LogLevelSelect(SelectEntity):
         """
 
         stored_info = self._stored_info()
+        effective_level, effective_source = effective_level_source(
+            self._logger_name
+        )
         return {
             "logger_name": self._logger_name,
             "core_pinned": is_core_pinned(self.hass, self._logger_name),
+            "effective_level": effective_level,
+            "effective_source": effective_source,
             "count_level": stored_info.get("count_level", DEFAULT_COUNT_LEVEL),
             "alert_threshold": stored_info.get(
                 "alert_threshold", ALERT_DISABLED

@@ -1,4 +1,5 @@
 from collections.abc import Iterable
+import logging
 import time
 
 DOMAIN = "log_manager"
@@ -26,6 +27,23 @@ def match_managed_logger(name: str, managed: Iterable[str]) -> str | None:
     if not matches:
         return None
     return max(matches, key=len)
+
+
+def effective_level_source(logger_name: str) -> tuple[str, str | None]:
+    """Return the effective level and the ancestor that defines it for a logger.
+
+    Walks the dotted hierarchy from ``logger_name`` upward and returns the first
+    explicit level found. The source is the ancestor that carries the level, or
+    None when the logger itself carries it. ``"root"`` means the root logger.
+    """
+    node = logging.getLogger(logger_name)
+    while node is not None:
+        if node.level != logging.NOTSET:
+            level_name = logging.getLevelName(node.level)
+            source = None if node.name == logger_name else node.name
+            return level_name, source
+        node = node.parent
+    return "WARNING", ""
 
 
 def record_audit(
