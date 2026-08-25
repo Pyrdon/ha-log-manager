@@ -19,6 +19,7 @@ from custom_components.log_manager.const import (
     DEFAULT_COUNT_LEVEL,
     effective_level_source,
 )
+from custom_components.log_manager.recording import LogRecordingHandler
 from custom_components.log_manager.core_sync import (
     is_core_pinned,
     reconcile_with_core,
@@ -461,3 +462,66 @@ class TestCoreSync:
         assert entity.current_option == "NOTSET"
         assert hass.data[DOMAIN]["loggers"]["pinned.log"]["level"] == "NOTSET"
         assert "audit" not in hass.data[DOMAIN]["loggers"]["pinned.log"]
+
+
+class TestRecordingExcludes:
+    def test_handler_excludes_subtree(self, hass):
+        hass.data[DOMAIN] = {
+            "loggers": {"parent": {"friendly_name": "Parent", "level": "INFO"}}
+        }
+        handler = LogRecordingHandler(
+            hass, frozenset(["parent"]), None, {"parent": ["parent.child"]}
+        )
+
+        handler.emit(_make_record("parent.child", logging.INFO))
+        handler.emit(_make_record("parent.child.deep", logging.INFO))
+        handler.emit(_make_record("parent.sibling", logging.INFO))
+
+        assert handler.count() == 1
+        assert handler.snapshot()[0]["logger"] == "parent.sibling"
+
+    async def test_ws_rejects_invalid_excludes(self, hass, hass_ws_client):
+        await _setup(hass)
+        client = await hass_ws_client(hass)
+        await client.send_json_auto_id({
+            "type": "log_manager/start_recording",
+            "loggers": ["rec.logger"],
+            "excludes": {"rec.logger": ["not.a.child"]},
+        })
+        result = await client.receive_json()
+        assert result["success"] is False
+        assert result["error"]["code"] == "invalid_excludes"
+
+    async def test_ws_rejects_excludes_for_unselected_logger(
+        self, hass, hass_ws_client
+    ):
+        await _setup(hass)
+        client = await hass_ws_client(hass)
+        await client.send_json_auto_id({
+            "type": "log_manager/start_recording",
+            "loggers": ["rec.logger"],
+            "excludes": {"other.logger": ["other.logger.child"]},
+        })
+        result = await client.receive_json()
+        assert result["success"] is False
+        assert result["error"]["code"] == "invalid_excludes"
+
+    async def test_ws_rejects_excludes_covering_selected_logger(
+        self, hass, hass_ws_client
+    ):
+        await _setup(hass)
+        hass.data[DOMAIN]["loggers"]["cov.parent"] = {
+            "friendly_name": "Cov Parent", "level": "NOTSET",
+        }
+        hass.data[DOMAIN]["loggers"]["cov.parent.child"] = {
+            "friendly_name": "Cov Child", "level": "NOTSET",
+        }
+        client = await hass_ws_client(hass)
+        await client.send_json_auto_id({
+            "type": "log_manager/start_recording",
+            "loggers": ["cov.parent", "cov.parent.child"],
+            "excludes": {"cov.parent": ["cov.parent.child"]},
+        })
+        result = await client.receive_json()
+        assert result["success"] is False
+        assert result["error"]["code"] == "invalid_excludes"

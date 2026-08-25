@@ -31,6 +31,7 @@ class LogRecordingHandler(logging.Handler):
         hass: HomeAssistant,
         logger_names: frozenset,
         level_overrides: dict[str, str] | None = None,
+        excludes: dict[str, list[str]] | None = None,
     ) -> None:
         super().__init__(logging.DEBUG)
         self.hass = hass
@@ -39,14 +40,30 @@ class LogRecordingHandler(logging.Handler):
             maxlen=self.MAX_BUFFER_SIZE
         )
         self.level_overrides = level_overrides or {}
+        self.excludes: dict[str, frozenset[str]] = {
+            name: frozenset(paths) for name, paths in (excludes or {}).items()
+        }
         self.logger_counts: dict[str, int] = {}
         self._next_entry_id: int = 0
         self._lock = threading.Lock()
+
+    def _is_excluded(self, name: str) -> bool:
+        """Return True when an event's logger is under an exclusion path."""
+        for logger_name, paths in self.excludes.items():
+            if not name.startswith(logger_name + "."):
+                continue
+            for path in paths:
+                if name == path or name.startswith(path + "."):
+                    return True
+        return False
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
             matched = self._match_logger(record.name)
             if matched is None:
+                return
+
+            if self._is_excluded(record.name):
                 return
 
             # Check override first, then fall back to stored config.
@@ -146,6 +163,9 @@ def async_stop_recording_session(hass: HomeAssistant) -> None:
     vol.Optional("level_overrides", default={}): vol.Schema(
         {cv.string: vol.In(LOG_LEVELS_LIST)}
     ),
+    vol.Optional("excludes", default={}): vol.Schema(
+        {cv.string: vol.All(cv.ensure_list, [cv.string])}
+    ),
 })
 @websocket_api.async_response
 async def ws_start_recording(hass: HomeAssistant, connection, msg: dict):
@@ -164,6 +184,7 @@ async def ws_start_recording(hass: HomeAssistant, connection, msg: dict):
     logger_names = set(msg["loggers"])
     max_duration = msg["max_duration"]
     level_overrides = msg.get("level_overrides", {})
+    excludes = msg.get("excludes", {})
 
     # Validate that all requested loggers are managed.
     managed = hass.data[DOMAIN].get("loggers", {})
@@ -175,7 +196,46 @@ async def ws_start_recording(hass: HomeAssistant, connection, msg: dict):
         )
         return
 
-    handler = LogRecordingHandler(hass, frozenset(logger_names), level_overrides)
+    # Exclusions must be child paths of a selected logger.
+    normalized_excludes: dict[str, list[str]] = {}
+    for logger_name, paths in excludes.items():
+        if logger_name not in logger_names:
+            connection.send_error(
+                msg["id"], "invalid_excludes",
+                f"Exclusions for '{logger_name}', which is not being recorded."
+            )
+            return
+        clean_paths = []
+        for path in paths:
+            path = path.strip()
+            segments = path.split(".")
+            if (
+                not path
+                or not path.startswith(logger_name + ".")
+                or any(not segment for segment in segments)
+            ):
+                connection.send_error(
+                    msg["id"], "invalid_excludes",
+                    f"Exclusion '{path}' is not a valid child path of '{logger_name}'."
+                )
+                return
+            clean_paths.append(path)
+        # An exclusion must not swallow another selected logger.
+        for path in clean_paths:
+            for other in logger_names:
+                if other != logger_name and (
+                    other == path or other.startswith(path + ".")
+                ):
+                    connection.send_error(
+                        msg["id"], "invalid_excludes",
+                        f"Exclusion '{path}' covers selected logger '{other}'."
+                    )
+                    return
+        normalized_excludes[logger_name] = clean_paths
+
+    handler = LogRecordingHandler(
+        hass, frozenset(logger_names), level_overrides, normalized_excludes
+    )
     logging.root.addHandler(handler)
 
     start_time = time.time()

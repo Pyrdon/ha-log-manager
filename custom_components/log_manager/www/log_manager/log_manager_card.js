@@ -1310,6 +1310,78 @@ select.level-select {
           cursor: not-allowed;
         }
 
+        .checklist-item {
+          flex-wrap: wrap;
+        }
+
+        .exclude-toggle {
+          font-size: 11px;
+          padding: 2px 6px;
+          border-radius: 3px;
+          border: 1px solid var(--divider-color);
+          background: none;
+          color: var(--secondary-text-color);
+          cursor: pointer;
+          flex-shrink: 0;
+        }
+
+        .exclude-toggle:hover {
+          color: var(--primary-text-color);
+          border-color: var(--primary-text-color);
+        }
+
+        .exclude-area {
+          flex-basis: 100%;
+          margin-top: 4px;
+          padding-left: 26px;
+        }
+
+        .exclude-chips {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 4px;
+          margin-bottom: 4px;
+        }
+
+        .exclude-chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          font-size: 11px;
+          padding: 1px 4px 1px 8px;
+          border-radius: 10px;
+          background: rgba(var(--rgb-primary-text-color), 0.08);
+          color: var(--primary-text-color);
+        }
+
+        .exclude-chip-remove {
+          border: none;
+          background: none;
+          color: var(--secondary-text-color);
+          cursor: pointer;
+          font-size: 11px;
+          padding: 0 2px;
+        }
+
+        .exclude-chip-remove:hover {
+          color: var(--error-color);
+        }
+
+        .exclude-input {
+          font-size: 12px;
+          padding: 3px 6px;
+          border-radius: 3px;
+          border: 1px solid var(--divider-color);
+          background: var(--card-background-color);
+          color: var(--primary-text-color);
+          width: 100%;
+          box-sizing: border-box;
+        }
+
+        .exclude-input.exclude-invalid {
+          border-color: var(--error-color);
+        }
+
         .select-all-row {
           display: flex;
           align-items: center;
@@ -1577,9 +1649,10 @@ select.level-select {
           if (levelSelect) levelOverrides[loggerName] = levelSelect.value;
         }
       });
+      const excludes = this._collectRecordingExcludes();
       this._recordingSetupDialog.classList.remove("visible");
       this._recordingSetupDialog.style.display = "none";
-      this._startRecording(selected, levelOverrides);
+      this._startRecording(selected, levelOverrides, excludes);
     });
 
     // Live view button.
@@ -2165,6 +2238,11 @@ select.level-select {
         <input type="checkbox" data-logger="${this._escapeAttr(loggerName)}">
         <span class="logger-label">${this._escapeHtml(friendlyName)}</span>
         <select class="recording-level-select" title="Recording level for this logger" disabled style="color: ${colors.color}; background: ${colors.bg};">${levelOpts}</select>
+        <button type="button" class="exclude-toggle" data-logger="${this._escapeAttr(loggerName)}" title="Exclude child loggers of ${this._escapeAttr(loggerName)} from this recording">+ exclusions</button>
+        <div class="exclude-area" data-logger="${this._escapeAttr(loggerName)}" style="display: none;">
+          <div class="exclude-chips"></div>
+          <input type="text" class="exclude-input" data-logger="${this._escapeAttr(loggerName)}" placeholder="child.path.to.exclude — Enter to add">
+        </div>
       </label>`;
     });
 
@@ -2209,6 +2287,89 @@ select.level-select {
       });
     });
 
+    this._loggerChecklist.querySelectorAll(".exclude-toggle").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const item = btn.closest(".checklist-item");
+        if (!item) return;
+        const area = item.querySelector(".exclude-area");
+        if (!area) return;
+        const open = area.style.display !== "none";
+        area.style.display = open ? "none" : "block";
+        btn.textContent = open ? "+ exclusions" : "− exclusions";
+        if (!open) {
+          const inp = area.querySelector(".exclude-input");
+          if (inp) inp.focus();
+        }
+      });
+      // Keep the label from toggling its checkbox.
+      btn.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+    });
+
+    this._loggerChecklist.querySelectorAll(".exclude-input").forEach(inp => {
+      // Keep the label from toggling its checkbox; focus manually.
+      inp.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        inp.focus();
+      });
+      inp.addEventListener("click", (e) => e.stopPropagation());
+      inp.addEventListener("input", () => {
+        // Clear a stale invalid flag as soon as the user edits the text.
+        inp.classList.remove("exclude-invalid");
+        inp.title = "";
+      });
+      inp.addEventListener("keydown", (e) => {
+        e.stopPropagation();
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        const path = inp.value.trim();
+        if (!path) return;
+        const loggerName = inp.dataset.logger;
+        const segments = path.split(".");
+        if (!path.startsWith(loggerName + ".") || segments.some(s => !s)) {
+          inp.classList.add("exclude-invalid");
+          inp.title = `Must be a child path of ${loggerName} without empty segments`;
+          return;
+        }
+        inp.classList.remove("exclude-invalid");
+        inp.title = "";
+        const chips = inp.closest(".exclude-area").querySelector(".exclude-chips");
+        const duplicate = Array.from(chips.querySelectorAll(".exclude-chip"))
+          .some(chip => chip.dataset.path === path);
+        if (duplicate) {
+          inp.value = "";
+          return;
+        }
+        const chip = document.createElement("span");
+        chip.className = "exclude-chip";
+        chip.dataset.path = path;
+        const label = document.createElement("span");
+        label.textContent = path;
+        const rm = document.createElement("button");
+        rm.type = "button";
+        rm.className = "exclude-chip-remove";
+        rm.textContent = "✕";
+        rm.title = "Remove exclusion";
+        rm.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          chip.remove();
+        });
+        rm.addEventListener("mousedown", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+        });
+        chip.append(label, rm);
+        chips.appendChild(chip);
+        inp.value = "";
+      });
+    });
+
     this._validateRecordingSetup();
     this._recordingSetupDialog.style.display = "flex";
     requestAnimationFrame(() => {
@@ -2216,12 +2377,27 @@ select.level-select {
     });
   }
 
+  _collectRecordingExcludes() {
+    const excludes = {};
+    const checked = this._loggerChecklist.querySelectorAll("input[type='checkbox']:checked:not(#select-all-checkbox)");
+    checked.forEach(cb => {
+      const loggerName = cb.dataset.logger;
+      const item = cb.closest(".checklist-item");
+      if (!item) return;
+      const paths = Array.from(item.querySelectorAll(".exclude-chip"))
+        .map(chip => chip.dataset.path)
+        .filter(Boolean);
+      if (paths.length > 0) excludes[loggerName] = paths;
+    });
+    return excludes;
+  }
+
   _validateRecordingSetup() {
     const checked = this._loggerChecklist.querySelectorAll("input[type='checkbox']:checked:not(#select-all-checkbox)");
     this._recordingSetupStart.disabled = checked.length === 0;
   }
 
-  _startRecording(loggers, levelOverrides) {
+  _startRecording(loggers, levelOverrides, excludes) {
     this._recordingState = "recording";
     this._recordingStartTime = Date.now();
     this._recordingLoggers = loggers;
@@ -2243,6 +2419,7 @@ select.level-select {
       loggers: loggers,
       max_duration: 300,
       level_overrides: levelOverrides || {},
+      excludes: excludes || {},
     }).then(res => {
       this._recordingMaxDuration = (res && res.max_duration) || 300;
     }).catch(err => {
