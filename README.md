@@ -11,6 +11,7 @@ A dynamic control panel for managing Python loggers in Home Assistant. This cust
 * **Core logger sync:** Levels pinned by Home Assistant itself (YAML `logger:` block, an integration's debug toggle, or the `logger.set_level` service) are adopted automatically and shown as read-only "Pinned" rows — the card never displays a level it cannot actually apply.
 * **Effective-level display:** Loggers left at `NOTSET` show the level that actually applies, resolved through inheritance — e.g. `effective: DEBUG` with the defining ancestor in the tooltip — so there is never doubt about what is in force.
 * **Live Log Recording:** Record log output from selected loggers for up to an hour, preview it in real time, then stop to review. Noisy child loggers can be excluded per selected logger. Export the captured entries as a plain-text `.log` file, JSON Lines (`.jsonl`), or copy them to the clipboard. Recorded sessions stay available until you explicitly discard them.
+* **Recording profiles:** Save a recording setup — logger selection, per-logger levels and duration — under a name and rerun it later from the card or from automations via `log_manager.start_recording` with a profile name.
 * **Smart UI Card:** Includes a custom Lovelace card with fuzzy searching.
 * **Persistent Configuration:** Active loggers and their levels are saved to Home Assistant storage and restored automatically on reboot.
 

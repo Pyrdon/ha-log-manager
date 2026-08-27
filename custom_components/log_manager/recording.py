@@ -17,6 +17,7 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_call_later
 
 from .const import DOMAIN, LOG_LEVELS_LIST, match_managed_logger
+from .profiles import get_profile
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -137,6 +138,7 @@ def async_register_recording_commands(hass: HomeAssistant) -> None:
     """Register the recording websocket commands."""
     websocket_api.async_register_command(hass, ws_start_recording)
     websocket_api.async_register_command(hass, ws_stop_recording)
+    websocket_api.async_register_command(hass, ws_discard_recording)
     websocket_api.async_register_command(hass, ws_recording_status)
     websocket_api.async_register_command(hass, ws_recording_entries)
 
@@ -156,7 +158,8 @@ def async_stop_recording_session(hass: HomeAssistant) -> None:
 
 @websocket_api.websocket_command({
     vol.Required("type"): f"{DOMAIN}/start_recording",
-    vol.Required("loggers"): vol.All(cv.ensure_list, [cv.string]),
+    vol.Optional("loggers", default=[]): vol.All(cv.ensure_list, [cv.string]),
+    vol.Optional("profile"): cv.string,
     vol.Optional("max_duration", default=300): vol.All(
         vol.Coerce(int), vol.Range(min=10, max=3600)
     ),
@@ -170,7 +173,8 @@ def async_stop_recording_session(hass: HomeAssistant) -> None:
 @websocket_api.async_response
 async def ws_start_recording(hass: HomeAssistant, connection, msg: dict):
     """
-    Start recording log events for the specified managed loggers.
+    Start recording log events for the specified managed loggers,
+    or for a saved profile.
     """
 
     recording = hass.data[DOMAIN].get("recording", {})
@@ -181,10 +185,30 @@ async def ws_start_recording(hass: HomeAssistant, connection, msg: dict):
         )
         return
 
-    logger_names = set(msg["loggers"])
-    max_duration = msg["max_duration"]
-    level_overrides = msg.get("level_overrides", {})
-    excludes = msg.get("excludes", {})
+    level_overrides = msg.get("level_overrides", {}) or {}
+    excludes = msg.get("excludes", {}) or {}
+    max_duration = msg.get("max_duration", 300)
+
+    profile_name = msg.get("profile")
+    if profile_name:
+        stored = get_profile(hass, profile_name)
+        if stored is None:
+            connection.send_error(
+                msg["id"], "profile_not_found",
+                f"Unknown recording profile '{profile_name}'."
+            )
+            return
+        logger_names = set(stored.get("loggers", []))
+        level_overrides = {**stored.get("level_overrides", {}), **level_overrides}
+        max_duration = stored.get("max_duration", max_duration)
+    else:
+        logger_names = set(msg.get("loggers", []))
+        if not logger_names:
+            connection.send_error(
+                msg["id"], "no_loggers",
+                "No loggers selected and no profile given."
+            )
+            return
 
     # Validate that all requested loggers are managed.
     managed = hass.data[DOMAIN].get("loggers", {})
@@ -313,6 +337,27 @@ async def ws_stop_recording(hass: HomeAssistant, connection, msg: dict):
         "log_count": log_count,
         "status": "completed",
     })
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/discard_recording"})
+@websocket_api.async_response
+async def ws_discard_recording(hass: HomeAssistant, connection, msg: dict):
+    """
+    Discard the active or completed recording session and its captured events.
+    """
+
+    recording = hass.data[DOMAIN].get("recording", {})
+    if recording.get("status") in ("recording", "completed"):
+        cancel_timer = recording.get("cancel_timer")
+        if cancel_timer:
+            cancel_timer()
+        handler = recording.get("handler")
+        if handler:
+            logging.root.removeHandler(handler)
+        _LOGGER.info("Discarded recording session.")
+    hass.data[DOMAIN]["recording"] = {"status": "none"}
+
+    connection.send_result(msg["id"], {"status": "none"})
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/recording_status"})

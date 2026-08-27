@@ -525,3 +525,56 @@ class TestRecordingExcludes:
         result = await client.receive_json()
         assert result["success"] is False
         assert result["error"]["code"] == "invalid_excludes"
+class TestProfiles:
+    async def test_ws_profile_save_get_use_delete(self, hass, hass_ws_client):
+        await _setup(hass)
+        client = await hass_ws_client(hass)
+
+        await client.send_json_auto_id({
+            "type": "log_manager/profile_save",
+            "name": "p1",
+            "loggers": ["rec.logger"],
+            "level_overrides": {"rec.logger": "DEBUG"},
+            "max_duration": 60,
+        })
+        result = await client.receive_json()
+        assert result["success"] is True
+        assert len(result["result"]["profiles"]) == 1
+
+        await client.send_json_auto_id({"type": "log_manager/profiles_get"})
+        result = await client.receive_json()
+        assert result["result"]["profiles"][0]["name"] == "p1"
+
+        await client.send_json_auto_id({
+            "type": "log_manager/start_recording",
+            "profile": "p1",
+        })
+        result = await client.receive_json()
+        assert result["success"] is True
+        session = hass.data[DOMAIN]["recording"]
+        assert session["status"] == "recording"
+        assert session["max_duration"] == 60
+
+        await client.send_json_auto_id({"type": "log_manager/discard_recording"})
+        result = await client.receive_json()
+        assert result["success"] is True
+
+        await client.send_json_auto_id({
+            "type": "log_manager/profile_delete",
+            "name": "p1",
+        })
+        result = await client.receive_json()
+        assert result["result"]["profiles"] == []
+
+    async def test_ws_start_with_unknown_profile(self, hass, hass_ws_client):
+        await _setup(hass)
+        client = await hass_ws_client(hass)
+        await client.send_json_auto_id({
+            "type": "log_manager/start_recording",
+            "profile": "missing",
+        })
+        result = await client.receive_json()
+        assert result["success"] is False
+        assert result["error"]["code"] == "profile_not_found"
+
+

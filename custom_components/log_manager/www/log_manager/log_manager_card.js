@@ -1262,6 +1262,53 @@ select.level-select {
           padding: 4px;
         }
 
+        .profile-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-top: 8px;
+          font-size: 13px;
+        }
+
+        .profile-label {
+          color: var(--secondary-text-color);
+          flex-shrink: 0;
+        }
+
+        #recording-profile-select {
+          flex: 1;
+          min-width: 0;
+          padding: 4px 6px;
+          border-radius: 4px;
+          border: 1px solid var(--divider-color);
+          background: var(--card-background-color);
+          color: var(--primary-text-color);
+          font-size: 13px;
+        }
+
+        .profile-btn {
+          padding: 4px 10px;
+          font-size: 12px;
+          flex-shrink: 0;
+        }
+
+        .profile-save-row {
+          display: flex;
+          gap: 8px;
+          margin-top: 8px;
+        }
+
+        #recording-profile-name {
+          flex: 1;
+          min-width: 0;
+          padding: 4px 6px;
+          border-radius: 4px;
+          border: 1px solid var(--divider-color);
+          background: var(--card-background-color);
+          color: var(--primary-text-color);
+          font-size: 13px;
+        }
+
         .checklist-item {
           display: flex;
           align-items: center;
@@ -1515,6 +1562,17 @@ select.level-select {
       <div class="dialog-overlay" id="recording-setup-dialog">
         <div class="dialog-box">
           <div class="dialog-title">Select Loggers to Record</div>
+          <div class="profile-row">
+            <label class="profile-label" for="recording-profile-select">Profile:</label>
+            <select id="recording-profile-select" title="Load a saved recording profile"></select>
+            <button class="btn-secondary profile-btn" id="recording-profile-save" title="Save the current selection as a profile">Save…</button>
+            <button class="btn-secondary profile-btn" id="recording-profile-delete" title="Delete the selected profile" disabled>✕</button>
+          </div>
+          <div class="profile-save-row" id="recording-profile-save-row" style="display: none;">
+            <input type="text" id="recording-profile-name" placeholder="Profile name" maxlength="64">
+            <button class="btn-primary profile-btn" id="recording-profile-confirm">Save</button>
+            <button class="btn-secondary profile-btn" id="recording-profile-abort">Cancel</button>
+          </div>
           <div id="logger-checklist" class="logger-checklist"></div>
           <div class="dialog-actions">
             <button class="btn-secondary" id="recording-setup-cancel">Cancel</button>
@@ -1577,6 +1635,13 @@ select.level-select {
     this._loggerChecklist = this.shadowRoot.getElementById("logger-checklist");
     this._recordingSetupStart = this.shadowRoot.getElementById("recording-setup-start");
     this._recordingSetupCancel = this.shadowRoot.getElementById("recording-setup-cancel");
+    this._profileSelect = this.shadowRoot.getElementById("recording-profile-select");
+    this._profileSaveBtn = this.shadowRoot.getElementById("recording-profile-save");
+    this._profileDeleteBtn = this.shadowRoot.getElementById("recording-profile-delete");
+    this._profileSaveRow = this.shadowRoot.getElementById("recording-profile-save-row");
+    this._profileNameInput = this.shadowRoot.getElementById("recording-profile-name");
+    this._profileConfirmBtn = this.shadowRoot.getElementById("recording-profile-confirm");
+    this._profileAbortBtn = this.shadowRoot.getElementById("recording-profile-abort");
     this._recordingLiveDialog = this.shadowRoot.getElementById("recording-live-dialog");
     this._liveTimer = this.shadowRoot.getElementById("live-timer");
     this._liveStatusText = this.shadowRoot.getElementById("live-status-text");
@@ -1635,6 +1700,40 @@ select.level-select {
     this._recordingSetupCancel.addEventListener("click", closeSetup);
     this._recordingSetupDialog.addEventListener("click", (e) => {
       if (e.target === this._recordingSetupDialog) closeSetup();
+    });
+
+    // Recording profile handlers.
+    this._profileSelect.addEventListener("change", () => {
+      const name = this._profileSelect.value;
+      this._profileDeleteBtn.disabled = !name;
+      if (name) this._applyProfile(name);
+    });
+    this._profileSaveBtn.addEventListener("click", () => {
+      this._profileNameInput.value = this._profileSelect.value || "";
+      this._profileSaveRow.style.display = "flex";
+      this._profileNameInput.focus();
+    });
+    this._profileAbortBtn.addEventListener("click", () => {
+      this._profileSaveRow.style.display = "none";
+      this._profileNameInput.value = "";
+    });
+    this._profileConfirmBtn.addEventListener("click", () => {
+      this._saveProfile();
+    });
+    this._profileNameInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") this._saveProfile();
+    });
+    this._profileDeleteBtn.addEventListener("click", () => {
+      const name = this._profileSelect.value;
+      if (!name) return;
+      this._showDeleteConfirm(`Delete recording profile "${name}"?`, () => {
+        this._hass.connection.sendMessagePromise({
+          type: "log_manager/profile_delete",
+          name: name,
+        }).then(res => {
+          this._renderProfileOptions((res && res.profiles) || []);
+        }).catch(err => console.error("Failed to delete profile:", err));
+      }, "Delete Profile", "Delete");
     });
 
     this._recordingSetupStart.addEventListener("click", () => {
@@ -2371,6 +2470,7 @@ select.level-select {
     });
 
     this._validateRecordingSetup();
+    this._loadProfiles();
     this._recordingSetupDialog.style.display = "flex";
     requestAnimationFrame(() => {
       this._recordingSetupDialog.classList.add("visible");
@@ -2390,6 +2490,93 @@ select.level-select {
       if (paths.length > 0) excludes[loggerName] = paths;
     });
     return excludes;
+  }
+
+  _loadProfiles() {
+    if (!this._hass || !this._hass.connection) {
+      this._renderProfileOptions([]);
+      return;
+    }
+    this._hass.connection.sendMessagePromise({
+      type: "log_manager/profiles_get",
+    }).then(res => {
+      this._renderProfileOptions((res && res.profiles) || []);
+    }).catch(() => {
+      this._renderProfileOptions([]);
+    });
+  }
+
+  _renderProfileOptions(profiles) {
+    if (!this._profileSelect) return;
+    const current = this._profileSelect.value;
+    this._profileSelect.innerHTML =
+      `<option value="">— None —</option>` + profiles.map(p =>
+        `<option value="${this._escapeAttr(p.name)}">${this._escapeHtml(p.name)}</option>`
+      ).join("");
+    this._profileSelect.value = profiles.some(p => p.name === current) ? current : "";
+    this._profileDeleteBtn.disabled = !this._profileSelect.value;
+    this._profileSaveRow.style.display = "none";
+    this._profileNameInput.value = "";
+  }
+
+  _applyProfile(name) {
+    this._hass.connection.sendMessagePromise({
+      type: "log_manager/profiles_get",
+    }).then(res => {
+      const profile = ((res && res.profiles) || []).find(p => p.name === name);
+      if (!profile) return;
+      const wanted = new Set(profile.loggers || []);
+      const overrides = profile.level_overrides || {};
+      this._loggerChecklist.querySelectorAll("input[type='checkbox']:not(#select-all-checkbox)").forEach(cb => {
+        const loggerName = cb.dataset.logger;
+        cb.checked = wanted.has(loggerName);
+        const item = cb.closest(".checklist-item");
+        if (!item) return;
+        const levelSelect = item.querySelector(".recording-level-select");
+        if (levelSelect) {
+          levelSelect.disabled = !cb.checked;
+          if (cb.checked && overrides[loggerName]) {
+            levelSelect.value = overrides[loggerName];
+            levelSelect.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+        }
+      });
+      const selectAll = this._loggerChecklist.querySelector("#select-all-checkbox");
+      if (selectAll) {
+        const allChecks = this._loggerChecklist.querySelectorAll("input[type='checkbox']:not(#select-all-checkbox)");
+        selectAll.checked = allChecks.length > 0 && Array.from(allChecks).every(c => c.checked);
+      }
+      this._validateRecordingSetup();
+    }).catch(err => console.error("Failed to load profile:", err));
+  }
+
+  _saveProfile() {
+    const name = this._profileNameInput.value.trim();
+    if (!name) {
+      this._profileNameInput.focus();
+      return;
+    }
+    const checkboxes = this._loggerChecklist.querySelectorAll("input[type='checkbox']:checked:not(#select-all-checkbox)");
+    const loggers = [];
+    const levelOverrides = {};
+    checkboxes.forEach(cb => {
+      const loggerName = cb.dataset.logger;
+      loggers.push(loggerName);
+      const levelSelect = cb.closest(".checklist-item").querySelector(".recording-level-select");
+      if (levelSelect) levelOverrides[loggerName] = levelSelect.value;
+    });
+    if (loggers.length === 0) return;
+    this._hass.connection.sendMessagePromise({
+      type: "log_manager/profile_save",
+      name: name,
+      loggers: loggers,
+      level_overrides: levelOverrides,
+      max_duration: this._recordingMaxDuration || 300,
+    }).then(res => {
+      this._renderProfileOptions((res && res.profiles) || []);
+      this._profileSelect.value = name;
+      this._profileDeleteBtn.disabled = false;
+    }).catch(err => console.error("Failed to save profile:", err));
   }
 
   _validateRecordingSetup() {

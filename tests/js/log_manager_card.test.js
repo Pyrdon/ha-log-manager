@@ -900,6 +900,103 @@ describe("LogManagerCard", () => {
     });
   });
 
+  describe("recording profiles", () => {
+    let rec;
+
+    beforeEach(() => {
+      rec = document.createElement("log-manager-card");
+      rec._hass = {
+        states: {
+          "select.test_logger": {
+            attributes: {
+              logger_name: "test.logger",
+              friendly_name: "Test Logger",
+            },
+            state: "NOTSET",
+          },
+          "select.other": {
+            attributes: {
+              logger_name: "other.logger",
+              friendly_name: "Other",
+            },
+            state: "INFO",
+          },
+        },
+        connection: { sendMessagePromise: jest.fn(() => Promise.resolve({ profiles: [] })) },
+        callService: jest.fn(),
+      };
+      rec._loggerChecklist = document.createElement("div");
+      rec._recordingSetupDialog = document.createElement("div");
+      rec._recordingSetupStart = { disabled: false };
+      rec._profileSelect = document.createElement("select");
+      rec._profileSaveRow = document.createElement("div");
+      rec._profileNameInput = document.createElement("input");
+      rec._profileDeleteBtn = document.createElement("button");
+      rec._openRecordingSetup();
+    });
+
+    test("loads profiles into the select on open", async () => {
+      expect(rec._hass.connection.sendMessagePromise).toHaveBeenCalledWith({
+        type: "log_manager/profiles_get",
+      });
+      await Promise.resolve();
+      rec._hass.connection.sendMessagePromise.mockResolvedValueOnce({
+        profiles: [{ name: "p1", loggers: [], level_overrides: {}, max_duration: 60 }],
+      });
+      rec._loadProfiles();
+      await Promise.resolve();
+      expect(rec._profileSelect.innerHTML).toContain("p1");
+    });
+
+    test("applying a profile checks its loggers and levels", async () => {
+      rec._hass.connection.sendMessagePromise.mockResolvedValueOnce({
+        profiles: [{
+          name: "p1",
+          loggers: ["test.logger"],
+          level_overrides: { "test.logger": "DEBUG" },
+          max_duration: 60,
+        }],
+      });
+      rec._applyProfile("p1");
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const boxes = rec._loggerChecklist.querySelectorAll(
+        "input[type='checkbox']:not(#select-all-checkbox)"
+      );
+      const byLogger = {};
+      boxes.forEach(cb => { byLogger[cb.dataset.logger] = cb; });
+      expect(byLogger["test.logger"].checked).toBe(true);
+      expect(byLogger["other.logger"].checked).toBe(false);
+      const levelSelect = byLogger["test.logger"]
+        .closest(".checklist-item")
+        .querySelector(".recording-level-select");
+      expect(levelSelect.value).toBe("DEBUG");
+    });
+
+    test("saving sends the current selection", async () => {
+      const boxes = rec._loggerChecklist.querySelectorAll(
+        "input[type='checkbox']:not(#select-all-checkbox)"
+      );
+      boxes.forEach(cb => {
+        cb.checked = cb.dataset.logger === "test.logger";
+      });
+      rec._profileNameInput.value = "p1";
+      rec._hass.connection.sendMessagePromise.mockResolvedValueOnce({ profiles: [] });
+
+      rec._saveProfile();
+      await Promise.resolve();
+
+      expect(rec._hass.connection.sendMessagePromise).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "log_manager/profile_save",
+          name: "p1",
+          loggers: ["test.logger"],
+        })
+      );
+    });
+  });
+
   describe("recording export", () => {
     let rec;
     let origCreate;

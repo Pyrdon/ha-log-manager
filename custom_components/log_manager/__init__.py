@@ -32,6 +32,7 @@ from .core_sync import (
     reconcile_with_core,
     register_core_sync,
 )
+from .profiles import async_register_profile_commands
 from .recording import (
     async_register_recording_commands,
     async_stop_recording_session,
@@ -320,6 +321,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             logging.getLogger(logger_name).setLevel(level)
 
     hass.data[DOMAIN]["loggers"] = cleaned_loggers
+    hass.data[DOMAIN]["profiles"] = stored_data.get("profiles", {})
 
     # Register recording websocket commands and initialize the session state.
     async_register_recording_commands(hass)
@@ -352,11 +354,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def save_data():
         """
-        Save the current list of loggers to storage.
+        Save the current list of loggers and recording profiles to storage.
         """
 
         await hass.data[DOMAIN]["store"].async_save(
-            {"loggers": hass.data[DOMAIN]["loggers"]}
+            {
+                "loggers": hass.data[DOMAIN]["loggers"],
+                "profiles": hass.data[DOMAIN]["profiles"],
+            }
         )
 
     # Expose the save function so select.py can trigger it.
@@ -540,6 +545,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN]["core_sync_unsub"] = register_core_sync(hass)
     reconcile_with_core(hass)
 
+    # Recording profiles websocket commands.
+    async_register_profile_commands(hass)
+
     # Forward the setup to the select platform so it can create the entities.
     await hass.config_entries.async_forward_entry_setups(entry, ["select"])
 
@@ -568,6 +576,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         hass.data[DOMAIN].pop("loggers", None)
         hass.data[DOMAIN].pop("counters", None)
+        hass.data[DOMAIN].pop("profiles", None)
 
     return unload_ok
 
