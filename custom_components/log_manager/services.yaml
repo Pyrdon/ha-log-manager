@@ -96,3 +96,51 @@ set_alert_threshold:
             - WARNING
             - ERROR
             - CRITICAL
+start_recording:
+  name: Start Recording
+  description: Start capturing log events from the selected managed loggers.
+  fields:
+    loggers:
+      name: Loggers
+      description: Managed logger namespaces to capture. Either this or a profile is required.
+      example:
+        - homeassistant.components.light
+      required: false
+      selector:
+        object:
+    profile:
+      name: Profile
+      description: A saved recording profile to run. Takes precedence over loggers.
+      required: false
+      selector:
+        text:
+    max_duration:
+      name: Max Duration
+      description: Session duration limit in seconds (10-3600).
+      default: 300
+      required: false
+      selector:
+        number:
+          min: 10
+          max: 3600
+          mode: box
+    level_overrides:
+      name: Level Overrides
+      description: Per-logger capture levels that override the stored level.
+      required: false
+      selector:
+        object:
+    excludes:
+      name: Excludes
+      description: Per-logger list of child paths to exclude (subtree matched).
+      required: false
+      selector:
+        object:
+
+stop_recording:
+  name: Stop Recording
+  description: Stop the active recording session and retain its captured events until discarded.
+
+discard_recording:
+  name: Discard Recording
+  description: Discard the active or completed recording session and its captured events.

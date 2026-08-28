@@ -91,6 +91,16 @@ async def test_ws_recording_flow(hass, hass_ws_client):
     assert [e["id"] for e in result["logs"]] == [0, 1, 2, 3]
     assert result["logs"][0]["logger"] == "rec.logger"
 
+    # The session is retained as completed until explicitly discarded.
+    res = await _send(client, {"type": "log_manager/recording_status"})
+    assert res["result"]["status"] == "completed"
+    assert res["result"]["log_count"] == 4
+    assert res["result"]["logger_counts"] == {"rec.logger": 4}
+
+    res = await _send(client, {"type": "log_manager/discard_recording"})
+    assert res["success"] is True
+    assert res["result"]["status"] == "none"
+
     res = await _send(client, {"type": "log_manager/recording_status"})
     assert res["result"]["status"] == "none"
 

@@ -35,6 +35,7 @@ from .core_sync import (
 from .profiles import async_register_profile_commands
 from .recording import (
     async_register_recording_commands,
+    async_register_recording_services,
     async_stop_recording_session,
 )
 
@@ -545,8 +546,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN]["core_sync_unsub"] = register_core_sync(hass)
     reconcile_with_core(hass)
 
-    # Recording profiles websocket commands.
+    # Recording profiles websocket commands and recording services.
     async_register_profile_commands(hass)
+    async_register_recording_services(hass)
 
     # Forward the setup to the select platform so it can create the entities.
     await hass.config_entries.async_forward_entry_setups(entry, ["select"])

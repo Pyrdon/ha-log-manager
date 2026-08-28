@@ -578,3 +578,20 @@ class TestProfiles:
         assert result["error"]["code"] == "profile_not_found"
 
 
+class TestRecordingServices:
+    async def test_service_start_stop_discard(self, hass):
+        await _setup(hass)
+
+        await hass.services.async_call(
+            DOMAIN,
+            "start_recording",
+            {"loggers": ["rec.logger"], "max_duration": 60},
+            blocking=True,
+        )
+        assert hass.data[DOMAIN]["recording"]["status"] == "recording"
+
+        await hass.services.async_call(DOMAIN, "stop_recording", {}, blocking=True)
+        assert hass.data[DOMAIN]["recording"]["status"] == "completed"
+
+        await hass.services.async_call(DOMAIN, "discard_recording", {}, blocking=True)
+        assert hass.data[DOMAIN]["recording"]["status"] == "none"
