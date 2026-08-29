@@ -198,3 +198,36 @@ async def test_ws_recording_timeout_completes_session(
     res = await _send(client, {"type": "log_manager/stop_recording"})
     assert res["success"] is True
     assert res["result"]["log_count"] == 1
+
+
+async def test_recording_timeout_fires_completed_event(
+    hass, hass_ws_client, monkeypatch
+):
+    """Session end via timeout fires the completed event with a summary."""
+    await _setup(hass)
+    events = []
+    hass.bus.async_listen(
+        "log_manager_recording_completed",
+        lambda event: events.append(event.data),
+    )
+
+    captured = {}
+
+    def fake_async_call_later(hass, delay, action):
+        captured["action"] = action
+        return lambda: None
+
+    monkeypatch.setattr(recording_module, "async_call_later", fake_async_call_later)
+
+    client = await hass_ws_client(hass)
+    res = await _start_recording(client, ["rec.logger"], max_duration=10)
+    assert res["success"] is True
+
+    captured["action"](dt_util.utcnow())
+    await hass.async_block_till_done()
+
+    assert len(events) == 1
+    assert events[0]["loggers"] == ["rec.logger"]
+    assert events[0]["log_count"] == 0
+
+    await _send(client, {"type": "log_manager/discard_recording"})

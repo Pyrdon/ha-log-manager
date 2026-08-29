@@ -23,7 +23,7 @@ The integration exposes the following services (callable from automations and th
 * `log_manager.set_count_level` — Set the counting threshold for a managed logger.
 * `log_manager.set_alert_threshold` — Notify after a managed logger logs a configurable number of events at or above a chosen severity.
 * `log_manager.start_recording` — Start capturing log events, with an explicit logger list or a saved profile name.
-* `log_manager.stop_recording` — Stop the active recording session, retaining its captured events.
+* `log_manager.stop_recording` — Stop the active recording session, retaining its captured events. Returns the captured logs when called with a response, and always fires a `log_manager_recording_completed` event with the session summary.
 * `log_manager.discard_recording` — Discard the active or completed recording session.
 
 ## Installation

@@ -595,3 +595,70 @@ class TestRecordingServices:
 
         await hass.services.async_call(DOMAIN, "discard_recording", {}, blocking=True)
         assert hass.data[DOMAIN]["recording"]["status"] == "none"
+
+    async def test_stop_service_returns_captured_logs(self, hass):
+        await _setup(hass)
+
+        await hass.services.async_call(
+            DOMAIN,
+            "start_recording",
+            {"loggers": ["rec.logger"], "max_duration": 60},
+            blocking=True,
+        )
+        handler = hass.data[DOMAIN]["recording"]["handler"]
+        handler.emit(_make_record("rec.logger", logging.WARNING, msg="warn one"))
+
+        result = await hass.services.async_call(
+            DOMAIN, "stop_recording", {}, blocking=True, return_response=True
+        )
+
+        assert result["log_count"] == 1
+        assert result["logs"][0]["message"] == "warn one"
+        assert result["status"] == "completed"
+
+        await hass.services.async_call(DOMAIN, "discard_recording", {}, blocking=True)
+
+    async def test_stop_fires_completed_event(self, hass):
+        await _setup(hass)
+        events = []
+        hass.bus.async_listen(
+            "log_manager_recording_completed",
+            lambda event: events.append(event.data),
+        )
+
+        await hass.services.async_call(
+            DOMAIN,
+            "start_recording",
+            {"loggers": ["rec.logger"], "max_duration": 60},
+            blocking=True,
+        )
+        await hass.services.async_call(DOMAIN, "stop_recording", {}, blocking=True)
+        await hass.async_block_till_done()
+
+        assert len(events) == 1
+        assert events[0]["loggers"] == ["rec.logger"]
+        assert "log_count" in events[0]
+
+        await hass.services.async_call(DOMAIN, "discard_recording", {}, blocking=True)
+
+    async def test_restop_does_not_refire_event(self, hass):
+        await _setup(hass)
+        events = []
+        hass.bus.async_listen(
+            "log_manager_recording_completed",
+            lambda event: events.append(event.data),
+        )
+
+        await hass.services.async_call(
+            DOMAIN,
+            "start_recording",
+            {"loggers": ["rec.logger"], "max_duration": 60},
+            blocking=True,
+        )
+        await hass.services.async_call(DOMAIN, "stop_recording", {}, blocking=True)
+        await hass.services.async_call(DOMAIN, "stop_recording", {}, blocking=True)
+        await hass.async_block_till_done()
+
+        assert len(events) == 1
+
+        await hass.services.async_call(DOMAIN, "discard_recording", {}, blocking=True)

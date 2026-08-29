@@ -13,7 +13,7 @@ import time
 import voluptuous as vol
 
 from homeassistant.components import websocket_api
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, SupportsResponse
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_call_later
 
@@ -201,6 +201,12 @@ def start_recording_session(
                 logging.root.removeHandler(h)
             rec["duration"] = round(time.time() - rec.get("start_time", time.time()), 1)
             rec["cancel_timer"] = None
+            _fire_recording_completed(
+                hass,
+                rec.get("log_count", 0),
+                rec.get("duration", 0),
+                rec.get("loggers", []),
+            )
 
     cancel_timer = async_call_later(hass, max_duration, _recording_timeout)
 
@@ -237,6 +243,7 @@ def stop_recording_session(hass: HomeAssistant) -> tuple[str | None, dict]:
             "logs": logs,
             "duration": recording.get("duration", 0),
             "log_count": recording.get("log_count", len(logs)),
+            "loggers": recording.get("loggers", []),
             "status": "completed",
         }
 
@@ -271,12 +278,27 @@ def stop_recording_session(hass: HomeAssistant) -> tuple[str | None, dict]:
         duration, log_count
     )
 
+    _fire_recording_completed(
+        hass, log_count, round(duration, 1), recording.get("loggers", [])
+    )
+
     return None, {
         "logs": logs,
         "duration": round(duration, 1),
         "log_count": log_count,
+        "loggers": recording.get("loggers", []),
         "status": "completed",
     }
+
+
+def _fire_recording_completed(
+    hass: HomeAssistant, log_count: int, duration: float, loggers: list
+) -> None:
+    """Fire the recording-completed event with a small summary payload."""
+    hass.bus.async_fire(
+        f"{DOMAIN}_recording_completed",
+        {"log_count": log_count, "duration": duration, "loggers": list(loggers)},
+    )
 
 
 def discard_recording_session(hass: HomeAssistant) -> dict:
@@ -517,6 +539,7 @@ def async_register_recording_services(hass: HomeAssistant) -> None:
             "Recording stopped via service: %s entries.",
             result.get("log_count", 0),
         )
+        return result
 
     async def service_discard_recording(call):
         discard_recording_session(hass)
@@ -529,7 +552,8 @@ def async_register_recording_services(hass: HomeAssistant) -> None:
         schema=START_RECORDING_SERVICE_SCHEMA,
     )
     hass.services.async_register(
-        DOMAIN, "stop_recording", service_stop_recording
+        DOMAIN, "stop_recording", service_stop_recording,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN, "discard_recording", service_discard_recording

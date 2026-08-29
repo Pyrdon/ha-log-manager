@@ -139,7 +139,7 @@ start_recording:
 
 stop_recording:
   name: Stop Recording
-  description: Stop the active recording session and retain its captured events until discarded.
+  description: Stop the active recording session and retain its captured events until discarded. Returns the captured logs, count, duration and loggers when called with a response; also fires a log_manager_recording_completed event with the session summary.
 
 discard_recording:
   name: Discard Recording
