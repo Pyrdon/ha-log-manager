@@ -153,6 +153,7 @@ class LogLevelSelect(SelectEntity):
                 "alert_threshold", ALERT_DISABLED
             ),
             "alert_level": stored_info.get("alert_level", DEFAULT_ALERT_LEVEL),
+            "sensor_enabled": stored_info.get("sensor_enabled", False),
             "audit": stored_info.get("audit", []),
         }
 

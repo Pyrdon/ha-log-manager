@@ -24,6 +24,7 @@ async def test_entity_initialization(hass):
     assert attrs["count_level"] == "WARNING"
     assert attrs["alert_threshold"] == 0
     assert attrs["alert_level"] == "ERROR"
+    assert attrs["sensor_enabled"] is False
     assert attrs["audit"] == []
 
 

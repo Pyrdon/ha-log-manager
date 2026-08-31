@@ -4,7 +4,8 @@
   "after_dependencies": [
     "http",
     "websocket_api",
-    "select"
+    "select",
+    "sensor"
   ],
   "codeowners": ["@pyrdon"],
   "config_flow": true,

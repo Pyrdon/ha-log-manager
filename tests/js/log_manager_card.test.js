@@ -652,6 +652,58 @@ describe("LogManagerCard", () => {
     });
   });
 
+  describe("counter sensor toggle", () => {
+    beforeEach(() => {
+      cardInstance._hass = {
+        states: {
+          "select.test": {
+            state: "INFO",
+            attributes: {
+              logger_name: "t.logger",
+              count_level: "WARNING",
+              alert_threshold: 0,
+              alert_level: "ERROR",
+              sensor_enabled: true,
+            },
+          },
+        },
+        callService: jest.fn(),
+      };
+      cardInstance._counters = {
+        "t.logger": { warning: 0, error: 0, recent_logs: [], levels: {} },
+      };
+    });
+
+    test("renders a checked toggle when sensors are enabled", () => {
+      const html = cardInstance._renderLogPanelHtml("t.logger");
+      expect(html).toContain('class="sensor-enabled-toggle"');
+      expect(html).toContain("checked");
+    });
+
+    test("renders an unchecked toggle by default", () => {
+      cardInstance._hass.states["select.test"].attributes.sensor_enabled = false;
+      const html = cardInstance._renderLogPanelHtml("t.logger");
+      expect(html).toContain('class="sensor-enabled-toggle"');
+      expect(html).not.toContain("checked");
+    });
+
+    test("toggling calls set_sensor_enabled with the checkbox state", () => {
+      const row = document.createElement("div");
+      row.innerHTML = cardInstance._renderLogPanelHtml("t.logger");
+      cardInstance._attachSensorHandler(row);
+
+      const toggle = row.querySelector(".sensor-enabled-toggle");
+      toggle.checked = false;
+      toggle.dispatchEvent(new Event("change", { bubbles: true }));
+
+      expect(cardInstance._hass.callService).toHaveBeenCalledWith(
+        "log_manager",
+        "set_sensor_enabled",
+        { logger_name: "t.logger", enabled: false }
+      );
+    });
+  });
+
   describe("audit trail panel", () => {
     beforeEach(() => {
       cardInstance._hass = {

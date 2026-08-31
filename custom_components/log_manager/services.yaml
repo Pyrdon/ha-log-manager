@@ -96,6 +96,25 @@ set_alert_threshold:
             - WARNING
             - ERROR
             - CRITICAL
+
+set_sensor_enabled:
+  name: Set Sensor Enabled
+  description: Enable or disable the warning/error counter sensors for a managed logger.
+  fields:
+    logger_name:
+      name: Logger Name
+      description: The Python logger namespace to configure.
+      example: homeassistant.components.light
+      required: true
+      selector:
+        text:
+    enabled:
+      name: Enabled
+      description: Whether the counter sensors are created for this logger.
+      required: true
+      selector:
+        boolean:
+
 start_recording:
   name: Start Recording
   description: Start capturing log events from the selected managed loggers.

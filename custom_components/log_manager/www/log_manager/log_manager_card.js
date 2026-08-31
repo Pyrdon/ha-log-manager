@@ -138,6 +138,17 @@ class LogManagerCard extends HTMLElement {
     };
   }
 
+  _getSensorInfo(loggerName) {
+    const eid = this._findEntityIdByLogger(loggerName);
+    if (!eid) return { enabled: false, disabled: true };
+    const stateObj = this._hass.states[eid];
+    const unavailable = stateObj.state === "unavailable" || stateObj.state === "unknown";
+    return {
+      enabled: !!stateObj.attributes.sensor_enabled,
+      disabled: unavailable,
+    };
+  }
+
   _getAuditEntries(loggerName) {
     const eid = this._findEntityIdByLogger(loggerName);
     if (!eid) return [];
@@ -187,6 +198,7 @@ class LogManagerCard extends HTMLElement {
     const { countLevel, disabled } = this._getCountLevelInfo(loggerName);
     const countLabel = countLevel === "NOTSET" ? "all levels" : `${countLevel} and above`;
     const alertInfo = this._getAlertInfo(loggerName);
+    const sensorInfo = this._getSensorInfo(loggerName);
 
     const recentLogs = stats.recent_logs || [];
     let entriesHtml = "";
@@ -237,6 +249,12 @@ class LogManagerCard extends HTMLElement {
             <select class="alert-level-select" data-logger="${this._escapeAttr(loggerName)}"${disabled ? " disabled" : ""}>${alertOptions}</select>
             <span>&ge;</span>
             <input class="alert-threshold-input" type="number" min="0" max="100000" step="1" value="${alertInfo.threshold}" data-logger="${this._escapeAttr(loggerName)}"${disabled ? " disabled" : ""}>
+          </label>
+        </div>
+        <div class="sensor-line-row">
+          <label class="sensor-row" title="Expose this logger's warning/error counts as sensor entities for automations and history. Off by default to avoid entity clutter.">
+            Sensors:
+            <input class="sensor-enabled-toggle" type="checkbox" data-logger="${this._escapeAttr(loggerName)}"${sensorInfo.enabled ? " checked" : ""}${sensorInfo.disabled ? " disabled" : ""}>
           </label>
         </div>
         ${this._renderAuditLine(this._getAuditEntries(loggerName))}
@@ -396,6 +414,23 @@ class LogManagerCard extends HTMLElement {
       num.addEventListener("change", send);
       num.addEventListener("click", (e) => e.stopPropagation());
     }
+  }
+
+  _attachSensorHandler(row) {
+    const toggle = row.querySelector(".sensor-enabled-toggle");
+    if (!toggle) return;
+    // Remove stale listeners to prevent duplicate handler accumulation.
+    const clone = toggle.cloneNode(true);
+    toggle.replaceWith(clone);
+    clone.addEventListener("change", () => {
+      const loggerName = clone.dataset.logger;
+      if (!loggerName) return;
+      this._hass.callService("log_manager", "set_sensor_enabled", {
+        logger_name: loggerName,
+        enabled: clone.checked
+      });
+    });
+    clone.addEventListener("click", (e) => e.stopPropagation());
   }
 
   _attachCopyPanelHandler(row) {
@@ -2130,6 +2165,7 @@ select.level-select {
         this._attachCopyPanelHandler(row);
         this._attachCountLevelHandler(row);
         this._attachAlertHandler(row);
+        this._attachSensorHandler(row);
         this._updateRecordingCountBadge(
           row, actualLoggerName,
           this._recordingCounts[actualLoggerName] || 0,
@@ -2172,6 +2208,7 @@ select.level-select {
               this._attachCopyPanelHandler(row);
               this._attachCountLevelHandler(row);
               this._attachAlertHandler(row);
+              this._attachSensorHandler(row);
             }
           } else {
             row.insertAdjacentHTML("beforeend", panelHtml);
@@ -2180,6 +2217,7 @@ select.level-select {
             this._attachCopyPanelHandler(row);
             this._attachCountLevelHandler(row);
             this._attachAlertHandler(row);
+            this._attachSensorHandler(row);
           }
         } else if (panel) {
           panel.remove();

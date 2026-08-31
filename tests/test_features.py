@@ -1,4 +1,5 @@
-"""Tests for the v3 storage schema migration."""
+"""Tests for the v3 schema, counters, alerts, core-sync, excludes, profiles,
+recording services and counter sensors."""
 
 import logging
 from types import SimpleNamespace
@@ -13,19 +14,19 @@ from custom_components.log_manager import (
     LogCounterHandler,
     LogManagerStore,
     STORAGE_VERSION,
+    sensor as sensor_platform,
 )
 from custom_components.log_manager.const import (
     ALERT_DISABLED,
     DEFAULT_COUNT_LEVEL,
     effective_level_source,
 )
-from custom_components.log_manager.recording import LogRecordingHandler
 from custom_components.log_manager.core_sync import (
     is_core_pinned,
     reconcile_with_core,
 )
+from custom_components.log_manager.recording import LogRecordingHandler
 from custom_components.log_manager.select import LogLevelSelect
-
 
 STORE_DATA = {
     "loggers": {
@@ -662,3 +663,49 @@ class TestRecordingServices:
         assert len(events) == 1
 
         await hass.services.async_call(DOMAIN, "discard_recording", {}, blocking=True)
+
+
+class TestSensorPlatform:
+    async def test_builds_sensors_and_reads_values(self, hass):
+        handler = LogCounterHandler(hass)
+        hass.data[DOMAIN] = {
+            "loggers": {
+                "sens.log": {
+                    "friendly_name": "Sens",
+                    "sensor_enabled": True,
+                    "count_level": "WARNING",
+                }
+            },
+            "counters": {"sens.log": {"warning": 1, "error": 2}},
+            "counter_handler": handler,
+        }
+
+        async_add_entities = MagicMock()
+        await sensor_platform.async_setup_entry(
+            hass, MagicMock(), async_add_entities
+        )
+
+        entities = async_add_entities.call_args[0][0]
+        assert len(entities) == 2
+        by_kind = {e._kind: e for e in entities}
+        assert set(by_kind) == {"warning", "error"}
+
+        with patch.object(by_kind["warning"], "async_write_ha_state"):
+            by_kind["warning"]._refresh()
+        with patch.object(by_kind["error"], "async_write_ha_state"):
+            by_kind["error"]._refresh()
+        assert by_kind["warning"]._attr_native_value == 1
+        assert by_kind["error"]._attr_native_value == 2
+
+    async def test_no_sensors_when_not_enabled(self, hass):
+        hass.data[DOMAIN] = {
+            "loggers": {"no.sensor": {"friendly_name": "No", "sensor_enabled": False}},
+            "counters": {},
+            "counter_handler": LogCounterHandler(hass),
+        }
+
+        async_add_entities = MagicMock()
+        await sensor_platform.async_setup_entry(
+            hass, MagicMock(), async_add_entities
+        )
+        async_add_entities.assert_not_called()

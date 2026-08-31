@@ -147,8 +147,21 @@ class LogCounterHandler(logging.Handler):
                     counters[matched_name]["last_warning"] = msg
 
                 self._maybe_alert(matched_name, counters[matched_name])
+
+            self._notify_update()
         except Exception:
             self.handleError(record)
+
+    def _notify_update(self) -> None:
+        """Push a counters-changed signal onto the event loop (thread-safe)."""
+
+        def _dispatch() -> None:
+            async_dispatcher_send(self.hass, f"{DOMAIN}_counters_updated")
+
+        try:
+            self.hass.loop.call_soon_threadsafe(_dispatch)
+        except RuntimeError:
+            pass
 
     def _maybe_alert(self, logger_name: str, counter: dict) -> None:
         """Fire a notification the first time events cross the alert threshold."""
@@ -193,6 +206,16 @@ class LogCounterHandler(logging.Handler):
             counter.pop("alert_fired", None)
         return counters
 
+    def values_for(self, logger_name: str) -> tuple[int, int]:
+        """Return (warning, error) counts for one managed logger."""
+        with self._lock:
+            counter = self.hass.data.get(DOMAIN, {}).get("counters", {}).get(
+                logger_name
+            )
+            if not counter:
+                return (0, 0)
+            return (counter["warning"], counter["error"])
+
     def reset(self, logger_name: str | None = None) -> None:
         """Reset warning and error counters for one or all managed loggers."""
         with self._lock:
@@ -205,6 +228,7 @@ class LogCounterHandler(logging.Handler):
                 for name in counters:
                     counters[name] = _empty_counters()
                 _LOGGER.info("Reset counters for all loggers.")
+        self._notify_update()
 
 
 def _schedule_alert(
@@ -444,6 +468,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             counter_handler.update_level()
             await save_data()
             async_dispatcher_send(hass, f"{DOMAIN}_remove_logger", logger_name)
+            async_dispatcher_send(hass, f"{DOMAIN}_sensors_changed")
 
     hass.services.async_register(
         DOMAIN,
@@ -539,6 +564,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         })
     )
 
+    async def set_sensor_enabled(call):
+        """Enable or disable counter sensor entities for a managed logger."""
+        logger_name = call.data["logger_name"]
+        enabled = call.data["enabled"]
+        info = hass.data[DOMAIN]["loggers"].get(logger_name)
+        if not info:
+            _LOGGER.warning("set_sensor_enabled: '%s' is not managed.", logger_name)
+            return
+        info["sensor_enabled"] = enabled
+        await save_data()
+        async_dispatcher_send(hass, f"{DOMAIN}_sensors_changed")
+        _LOGGER.info("%s sensors for '%s'.", "Enabled" if enabled else "Disabled", logger_name)
+
+    hass.services.async_register(
+        DOMAIN,
+        "set_sensor_enabled",
+        set_sensor_enabled,
+        schema=vol.Schema({
+            vol.Required("logger_name"): cv.string,
+            vol.Required("enabled"): cv.boolean,
+        })
+    )
+
     # Size the counter handler to the lowest configured counting level.
     counter_handler.update_level()
 
@@ -550,8 +598,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async_register_profile_commands(hass)
     async_register_recording_services(hass)
 
-    # Forward the setup to the select platform so it can create the entities.
-    await hass.config_entries.async_forward_entry_setups(entry, ["select"])
+    # Forward the setup to the select and sensor platforms.
+    await hass.config_entries.async_forward_entry_setups(entry, ["select", "sensor"])
 
     return True
 
@@ -560,7 +608,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     Unload a config entry when the user deletes it from the UI.
     """
 
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, ["select"])
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, ["select", "sensor"])
 
     if unload_ok:
         # Stop any active recording session and remove its handler.
