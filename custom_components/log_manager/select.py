@@ -104,6 +104,15 @@ class LogLevelSelect(SelectEntity):
             )
         )
 
+        # Push the new sensor_enabled attr after the toggle service runs.
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{DOMAIN}_sensors_changed",
+                self._handle_sensors_changed
+            )
+        )
+
     async def _handle_remove_signal(self, logger_name: str):
         """
         Remove the entity from Home Assistant if the name matches.
@@ -124,6 +133,10 @@ class LogLevelSelect(SelectEntity):
         if level != self._attr_current_option:
             self._attr_current_option = level
             self.async_write_ha_state()
+
+    async def _handle_sensors_changed(self):
+        """Refresh state so the latest sensor_enabled attr reaches the frontend."""
+        self.async_write_ha_state()
 
     @property
     def current_option(self) -> str:

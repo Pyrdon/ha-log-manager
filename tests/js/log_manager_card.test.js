@@ -702,6 +702,47 @@ describe("LogManagerCard", () => {
         { logger_name: "t.logger", enabled: false }
       );
     });
+
+    test("panel refresh path keeps the toggle wired to set_sensor_enabled", () => {
+      Object.assign(cardInstance._hass.states["select.test"].attributes, {
+        friendly_name: "Test",
+        options: ["NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        sensor_enabled: true,
+      });
+      cardInstance._counters = {
+        "t.logger": { warning: 0, error: 0, recent_logs: [], levels: {} },
+      };
+      cardInstance._prevRowStates = {};
+      cardInstance._prevPanelHtml = {};
+      cardInstance._activeList = document.createElement("div");
+      cardInstance._expandedLogger = "t.logger";
+
+      // Create path: expanded row renders the panel and wires the toggle.
+      cardInstance._updateActiveList();
+      let row = cardInstance._activeList.querySelector(
+        '.log-row[data-entity-id="select.test"]'
+      );
+      expect(row.querySelector(".sensor-enabled-toggle")).not.toBeNull();
+
+      // Update path: an attr change replaces the panel HTML and must re-wire.
+      cardInstance._hass.states["select.test"].attributes.sensor_enabled = false;
+      cardInstance._updateActiveList();
+      row = cardInstance._activeList.querySelector(
+        '.log-row[data-entity-id="select.test"]'
+      );
+      const toggle = row.querySelector(".sensor-enabled-toggle");
+      expect(toggle.checked).toBe(false);
+
+      toggle.checked = true;
+      toggle.dispatchEvent(new Event("change", { bubbles: true }));
+      expect(cardInstance._hass.callService).toHaveBeenCalledWith(
+        "log_manager",
+        "set_sensor_enabled",
+        { logger_name: "t.logger", enabled: true }
+      );
+
+      cardInstance._expandedLogger = null;
+    });
   });
 
   describe("audit trail panel", () => {

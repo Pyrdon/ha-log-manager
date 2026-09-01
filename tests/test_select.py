@@ -28,6 +28,18 @@ async def test_entity_initialization(hass):
     assert attrs["audit"] == []
 
 
+async def test_sensors_changed_refreshes_state(hass):
+    hass.data[DOMAIN] = {
+        "loggers": {"my.module": {"friendly_name": "My Module", "level": "WARNING"}},
+    }
+
+    entity = LogLevelSelect(hass, "my.module", "My Module")
+
+    with patch.object(entity, "async_write_ha_state") as mock_write:
+        await entity._handle_sensors_changed()
+        mock_write.assert_called_once()
+
+
 async def test_entity_init_defaults_to_notset_when_no_stored_level(hass):
     hass.data[DOMAIN] = {
         "loggers": {"new.logger": {"friendly_name": "New"}},

@@ -441,7 +441,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN]["loggers"] = stored_loggers
 
         # Initialize counters for the new logger.
-        hass.data[DOMAIN]["counters"][logger_name] = _empty_counters()
+        with counter_handler._lock:
+            hass.data[DOMAIN]["counters"][logger_name] = _empty_counters()
         counter_handler.update_level()
 
         await save_data()
@@ -464,7 +465,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         if logger_name in hass.data[DOMAIN]["loggers"]:
             del hass.data[DOMAIN]["loggers"][logger_name]
-            hass.data[DOMAIN]["counters"].pop(logger_name, None)
+            with counter_handler._lock:
+                hass.data[DOMAIN]["counters"].pop(logger_name, None)
             counter_handler.update_level()
             await save_data()
             async_dispatcher_send(hass, f"{DOMAIN}_remove_logger", logger_name)

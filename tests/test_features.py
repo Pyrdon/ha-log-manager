@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import voluptuous as vol
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.log_manager import (
@@ -709,3 +710,40 @@ class TestSensorPlatform:
             hass, MagicMock(), async_add_entities
         )
         async_add_entities.assert_not_called()
+
+    async def test_unique_ids_are_lowercase_and_collision_free(self):
+        first = sensor_platform.LogCounterSensor(None, "foo.bar", "warning", "Foo")
+        second = sensor_platform.LogCounterSensor(None, "foo_bar", "warning", "Foo")
+        upper = sensor_platform.LogCounterSensor(None, "Foo.Bar", "warning", "Foo")
+        assert first._attr_unique_id == first._attr_unique_id.lower()
+        assert first._attr_unique_id != second._attr_unique_id
+        assert first._attr_unique_id != upper._attr_unique_id
+
+    async def test_removes_sensors_when_toggled_off(self, hass):
+        handler = LogCounterHandler(hass)
+        hass.data[DOMAIN] = {
+            "loggers": {
+                "sens.log": {
+                    "friendly_name": "Sens",
+                    "sensor_enabled": True,
+                    "count_level": "WARNING",
+                }
+            },
+            "counters": {"sens.log": {"warning": 1, "error": 2}},
+            "counter_handler": handler,
+        }
+
+        async_add_entities = MagicMock()
+        await sensor_platform.async_setup_entry(
+            hass, MagicMock(), async_add_entities
+        )
+        entities = async_add_entities.call_args[0][0]
+        for entity in entities:
+            entity.async_remove = AsyncMock()
+
+        hass.data[DOMAIN]["loggers"]["sens.log"]["sensor_enabled"] = False
+        async_dispatcher_send(hass, f"{DOMAIN}_sensors_changed")
+        await hass.async_block_till_done()
+
+        for entity in entities:
+            entity.async_remove.assert_awaited_once_with(force_remove=True)

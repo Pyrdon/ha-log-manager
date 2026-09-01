@@ -5,7 +5,9 @@ They track the counter handler's live counts and update on every counters
 signal so automations and history can react to a logger's traffic.
 """
 
+import hashlib
 import logging
+import re
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.core import callback
@@ -17,7 +19,10 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _safe_id(logger_name: str) -> str:
-    return logger_name.replace(".", "_").lower()
+    """Return a unique, lowercase registry-safe id fragment for a logger name."""
+    safe = re.sub(r"[^a-z0-9_]", "_", logger_name.lower())
+    digest = hashlib.sha1(logger_name.encode("utf-8")).hexdigest()[:8]
+    return f"{safe}_{digest}"
 
 
 class LogCounterSensor(SensorEntity):
