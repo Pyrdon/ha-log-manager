@@ -104,10 +104,36 @@ class LogManagerCard extends HTMLElement {
     const info = this._effectiveChipInfo(stateObj, currentLevel, isUnavailable);
     if (!info) return "";
     const colors = this._levelColors(info.effectiveLevel);
-    return `<div class="effective-line" title="${this._escapeAttr(info.sourceText)}">effective: <span style="color: ${colors.color};">${this._escapeHtml(info.effectiveLevel)}</span></div>`;
+    return `<div class="effective-line" title="${this._escapeAttr(info.sourceText)}">effective: <span class="effective-level" style="color: ${colors.color};">${this._escapeHtml(info.effectiveLevel)}</span></div>`;
   }
 
-  _findEntityIdByLogger(loggerName) {    if (!this._hass) return null;
+  _updateEffectiveChipInPlace(pathDiv, stateObj, currentLevel, isUnavailable) {
+    const existing = pathDiv.querySelector(".effective-line");
+    const html = this._renderEffectiveChip(stateObj, currentLevel, isUnavailable);
+    if (!html) {
+      if (existing) existing.remove();
+      return;
+    }
+    if (!existing) {
+      pathDiv.insertAdjacentHTML("beforeend", html);
+      return;
+    }
+    // Update the existing node in place so the tooltip hover timer survives,
+    // following the counter-badge pattern.
+    const fresh = document.createElement("div");
+    fresh.innerHTML = html;
+    const freshLine = fresh.firstChild;
+    const levelSpan = existing.querySelector(".effective-level");
+    const freshSpan = freshLine.querySelector(".effective-level");
+    if (levelSpan && freshSpan) {
+      levelSpan.textContent = freshSpan.textContent;
+      levelSpan.setAttribute("style", freshSpan.getAttribute("style") || "");
+    }
+    existing.setAttribute("title", freshLine.getAttribute("title") || "");
+  }
+
+  _findEntityIdByLogger(loggerName) {
+    if (!this._hass) return null;
     const eid = Object.keys(this._hass.states).find(id => {
       if (!id.startsWith("select.")) return false;
       return this._hass.states[id].attributes.logger_name === loggerName;
@@ -2275,18 +2301,7 @@ select.level-select {
         if (prev.effective !== chipSig) {
           const pathDiv = row.querySelector(".log-name > div:last-child");
           if (pathDiv) {
-            const existing = pathDiv.querySelector(".effective-line");
-            if (chipInfo && !existing) {
-              pathDiv.insertAdjacentHTML(
-                "beforeend", this._renderEffectiveChip(stateObj, currentLevel, isUnavailable)
-              );
-            } else if (!chipInfo && existing) {
-              existing.remove();
-            } else if (chipInfo && existing) {
-              const fresh = document.createElement("div");
-              fresh.innerHTML = this._renderEffectiveChip(stateObj, currentLevel, isUnavailable);
-              existing.replaceWith(fresh.firstChild);
-            }
+            this._updateEffectiveChipInPlace(pathDiv, stateObj, currentLevel, isUnavailable);
           }
         }
 

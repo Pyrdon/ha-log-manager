@@ -105,6 +105,42 @@ async def test_add_logger_service(hass):
     assert "test.module" in hass.data[DOMAIN]["counters"]
 
 
+async def test_add_logger_adopts_core_pin(hass):
+    from types import SimpleNamespace
+
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    hass.data["logger"] = SimpleNamespace(overrides={"pinned.new": 10})
+
+    await hass.services.async_call(
+        DOMAIN, "add_logger",
+        {"logger_name": "pinned.new", "friendly_name": "Pinned New"},
+        blocking=True,
+    )
+
+    assert hass.data[DOMAIN]["loggers"]["pinned.new"]["level"] == "DEBUG"
+
+
+async def test_snapshot_strips_internal_alert_flag(hass):
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    hass.data[DOMAIN]["counters"]["x"] = {
+        "warning": 0, "error": 1, "alert_fired": True,
+        "last_warning": "", "last_error": "boom",
+        "recent_logs": [], "levels": {"ERROR": 1},
+    }
+
+    snapshot = hass.data[DOMAIN]["counter_handler"].snapshot()
+    assert "alert_fired" not in snapshot["x"]
+    assert snapshot["x"]["error"] == 1
+
+
 async def test_remove_logger_service(hass):
     store_data = {
         "loggers": {

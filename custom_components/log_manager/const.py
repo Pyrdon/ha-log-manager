@@ -34,16 +34,24 @@ def effective_level_source(logger_name: str) -> tuple[str, str | None]:
 
     Walks the dotted hierarchy from ``logger_name`` upward and returns the first
     explicit level found. The source is the ancestor that carries the level, or
-    None when the logger itself carries it. ``"root"`` means the root logger.
+    None when the logger itself carries it. ``"root"`` means the root logger,
+    including the fallback when no ancestor carries an explicit level.
     """
-    node = logging.getLogger(logger_name)
+    manager = logging.Logger.manager
+    existing = manager.loggerDict.get(logger_name)
+    if isinstance(existing, logging.Logger):
+        node: logging.Logger | None = existing
+    else:
+        # Only creates the Logger object when nothing was ever registered
+        # under this name; managed loggers practically always exist already.
+        node = logging.getLogger(logger_name)
     while node is not None:
         if node.level != logging.NOTSET:
             level_name = logging.getLevelName(node.level)
             source = None if node.name == logger_name else node.name
             return level_name, source
         node = node.parent
-    return "WARNING", ""
+    return "WARNING", "root"
 
 
 def record_audit(
