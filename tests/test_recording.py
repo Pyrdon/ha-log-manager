@@ -105,6 +105,70 @@ async def test_ws_recording_flow(hass, hass_ws_client):
     assert res["result"]["status"] == "none"
 
 
+async def test_ws_stop_recording_is_idempotent(hass, hass_ws_client):
+    """Fetching results after the session completed returns the retained logs."""
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+
+    res = await _start_recording(client, ["rec.logger"])
+    assert res["success"] is True
+    handler = hass.data[DOMAIN]["recording"]["handler"]
+    handler.emit(_make_record("rec.logger", logging.WARNING, msg="warn one"))
+    handler.emit(_make_record("rec.logger", logging.INFO, msg="info two"))
+
+    res = await _send(client, {"type": "log_manager/stop_recording"})
+    assert res["success"] is True
+    assert res["result"]["log_count"] == 2
+
+    # Second fetch returns the same retained logs, no side effects.
+    res = await _send(client, {"type": "log_manager/stop_recording"})
+    assert res["success"] is True
+    assert res["result"]["log_count"] == 2
+    assert [e["message"] for e in res["result"]["logs"]] == ["warn one", "info two"]
+
+    await _send(client, {"type": "log_manager/discard_recording"})
+    res = await _send(client, {"type": "log_manager/stop_recording"})
+    assert res["success"] is False
+    assert res["error"]["code"] == "not_recording"
+
+
+async def test_ws_clear_recording_keeps_recording(hass, hass_ws_client):
+    """Clearing the buffer restarts entry ids while the session continues."""
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+
+    res = await _start_recording(client, ["rec.logger"])
+    assert res["success"] is True
+    handler = hass.data[DOMAIN]["recording"]["handler"]
+    handler.emit(_make_record("rec.logger", logging.WARNING, msg="warn one"))
+    handler.emit(_make_record("rec.logger", logging.WARNING, msg="warn two"))
+
+    res = await _send(client, {"type": "log_manager/clear_recording"})
+    assert res["success"] is True
+
+    res = await _send(client, {"type": "log_manager/recording_status"})
+    assert res["result"]["status"] == "recording"
+    assert res["result"]["log_count"] == 0
+
+    # New entries are captured with ids starting from 0 again.
+    handler.emit(_make_record("rec.logger", logging.WARNING, msg="warn three"))
+    res = await _send(client, {"type": "log_manager/recording_entries", "after_id": 0})
+    assert res["success"] is True
+    assert [e["id"] for e in res["result"]["entries"]] == [0]
+    assert res["result"]["entries"][0]["message"] == "warn three"
+
+    await _send(client, {"type": "log_manager/discard_recording"})
+
+
+async def test_ws_clear_recording_without_session(hass, hass_ws_client):
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+
+    res = await _send(client, {"type": "log_manager/clear_recording"})
+    assert res["success"] is False
+    assert res["error"]["code"] == "not_recording"
+
+
 async def test_ws_start_recording_rejects_unknown_logger(hass, hass_ws_client):
     await _setup(hass)
     client = await hass_ws_client(hass)

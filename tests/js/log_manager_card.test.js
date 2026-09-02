@@ -310,6 +310,7 @@ describe("LogManagerCard", () => {
       c._recordBtn = { classList: { add: jest.fn(), remove: jest.fn() } };
       c._recordText = { textContent: "" };
       c._liveBtn = { style: { display: "" } };
+      c._discardRecordBtn = { style: { display: "" } };
       c._recordingCounts = {};
       c._recordingState = null;
       c._recordingLoggers = [];
@@ -406,6 +407,8 @@ describe("LogManagerCard", () => {
       rec._recordingBuffer = [];
       rec._livePreview = {
         appendChild: jest.fn(),
+        querySelector: jest.fn(() => ({})),
+        insertAdjacentHTML: jest.fn(),
         scrollHeight: 0,
         scrollTop: 0,
         clientHeight: 0,

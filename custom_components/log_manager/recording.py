@@ -118,6 +118,17 @@ class LogRecordingHandler(logging.Handler):
         with self._lock:
             return len(self.buffer)
 
+    def clear(self) -> None:
+        """Clear the buffer and per-logger counts, restarting entry ids at 0.
+
+        The recording session itself is unaffected; new entries continue to be
+        captured from id 0.
+        """
+        with self._lock:
+            self.buffer.clear()
+            self.logger_counts.clear()
+            self._next_entry_id = 0
+
     def entries_after(self, after_id: int) -> tuple[list[dict], int]:
         """Return entries newer than or equal to ``after_id`` plus the next id.
 
@@ -350,6 +361,7 @@ def async_register_recording_commands(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_start_recording)
     websocket_api.async_register_command(hass, ws_stop_recording)
     websocket_api.async_register_command(hass, ws_discard_recording)
+    websocket_api.async_register_command(hass, ws_clear_recording)
     websocket_api.async_register_command(hass, ws_recording_status)
     websocket_api.async_register_command(hass, ws_recording_entries)
 
@@ -433,6 +445,28 @@ async def ws_discard_recording(hass: HomeAssistant, connection, msg: dict):
     """
 
     connection.send_result(msg["id"], discard_recording_session(hass))
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/clear_recording"})
+@websocket_api.async_response
+async def ws_clear_recording(hass: HomeAssistant, connection, msg: dict):
+    """
+    Clear the buffered entries of an active recording without stopping it.
+    """
+
+    recording = hass.data[DOMAIN].get("recording", {})
+    if recording.get("status") != "recording":
+        connection.send_error(
+            msg["id"], "not_recording",
+            "No active recording session."
+        )
+        return
+
+    handler = recording.get("handler")
+    if handler:
+        handler.clear()
+
+    connection.send_result(msg["id"], {"status": "recording"})
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/recording_status"})
