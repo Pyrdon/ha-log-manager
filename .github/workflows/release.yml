@@ -30,8 +30,15 @@ jobs:
                 { "title": "📚 Documentation", "labels": ["docs"] },
                 { "title": "🧰 Maintenance", "labels": ["chore", "refactor", "style", "test"] }
               ],
+              "sort": { "order": "DESC", "on_property": "mergedAt" },
               "template": "# Release Notes\n\n#{{CHANGELOG}}\n\n#{{UNCATEGORIZED}}\n",
-              "pr_template": "- #{{TITLE}} (#{{MERGE_SHA}})"
+              "pr_template": "- #{{TITLE}} (#{{MERGE_SHA}})",
+              "transformers": [
+                {
+                  "pattern": "^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\\([\\w\\-\\.]+\\))?(!)?: (.*)",
+                  "target": "$4"
+                }
+              ]
             }
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
