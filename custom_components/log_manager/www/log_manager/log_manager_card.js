@@ -19,7 +19,7 @@ class LogManagerCard extends HTMLElement {
     this._prevRowStates = {};
     this._prevPanelHtml = {};
 
-    this._recordingState = null; // null | "recording" | "completed" | "results"
+    this._recordingState = null; // null | "recording" | "stopping" | "completed" | "results"
     this._recordingStartTime = 0;
     this._recordingLoggers = [];
     this._recordingLevelOverrides = {};
@@ -29,6 +29,12 @@ class LogManagerCard extends HTMLElement {
     this._recordingTimerInterval = null;
     this._recordingMaxDuration = 300;
     this._recordingCounts = {};
+    this._recordingBackendCount = 0;
+    this._liveViewOpen = false;
+    this._livePaused = false;
+    this._liveLastId = 0;
+
+    this._friendlyNameDirty = false;
 
     this._savedPath = sessionStorage.getItem("logManagerPath") || "";
     this._savedName = sessionStorage.getItem("logManagerName") || "";
@@ -51,8 +57,28 @@ class LogManagerCard extends HTMLElement {
     if (this._pathInput) this._pathInput.value = "";
     if (this._friendlyNameInput) this._friendlyNameInput.value = "";
     this._editingPath = null;
+    this._friendlyNameDirty = false;
     sessionStorage.removeItem("logManagerPath");
     sessionStorage.removeItem("logManagerName");
+  }
+
+  _deriveFriendlyName(path) {
+    const lastSegment = (path.split(".").pop() || "").trim();
+    if (!lastSegment) return "";
+    return lastSegment.split("_").map(word =>
+      word.charAt(0).toUpperCase() + word.slice(1)
+    ).join(" ");
+  }
+
+  _applyAutoFriendlyName() {
+    if (this._friendlyNameDirty) return;
+    const path = this._pathInput.value.trim();
+    if (!path) return;
+    const derived = this._deriveFriendlyName(path);
+    if (!derived) return;
+    this._friendlyNameInput.value = derived;
+    this._persistState();
+    this._validateAddButton();
   }
 
   _fetchCounters() {
@@ -356,6 +382,8 @@ class LogManagerCard extends HTMLElement {
     setTimeout(() => {
       if (this._isAddSectionVisible) {
         this._addSectionWrapper.style.overflow = "visible";
+        this._pathInput.focus();
+        this._pathInput.select();
       }
     }, 300);
     this._renderDropdown();
@@ -549,10 +577,11 @@ class LogManagerCard extends HTMLElement {
   }
 
   // Show a styled delete confirmation dialog instead of browser confirm().
-  _showDeleteConfirm(displayName, onConfirm) {
-    this._deleteConfirmTarget = { displayName, onConfirm };
-    this._deleteDialog.querySelector(".delete-dialog-message").textContent =
-      `Remove logger "${displayName}"?`;
+  _showDeleteConfirm(message, onConfirm, title = "Remove Logger", confirmLabel = "Remove") {
+    this._deleteConfirmTarget = { onConfirm };
+    this._deleteDialog.querySelector(".delete-dialog-title").textContent = title;
+    this._deleteDialog.querySelector(".delete-dialog-message").textContent = message;
+    this.shadowRoot.getElementById("delete-confirm-btn").textContent = confirmLabel;
     this._deleteDialog.style.display = "flex";
   }
 
@@ -1529,15 +1558,35 @@ select.level-select {
           display: flex;
           gap: 8px;
           padding: 2px 10px;
+          user-select: all;
+          -webkit-user-select: all;
         }
 
         .log-preview-line:hover {
           filter: brightness(1.2);
         }
 
+        .log-preview-header {
+          display: flex;
+          gap: 8px;
+          padding: 4px 10px;
+          font-weight: 600;
+          color: var(--secondary-text-color);
+          position: sticky;
+          top: 0;
+          background: var(--card-background-color);
+          border-bottom: 1px solid var(--divider-color);
+          user-select: none;
+          -webkit-user-select: none;
+        }
+
         .log-preview-col {
           flex-shrink: 0;
-          user-select: text;
+        }
+
+        .log-preview-col.idx-col {
+          width: 44px;
+          color: var(--secondary-text-color);
         }
 
         .log-preview-col.level-col {
@@ -1595,6 +1644,10 @@ select.level-select {
           <button class="toggle-add-btn" id="record-btn" title="Record log events for export">
             <ha-icon icon="mdi:record-circle" id="record-icon"></ha-icon>
             <span id="record-text">Record</span>
+          </button>
+
+          <button class="toggle-add-btn" id="discard-record-btn" style="display: none; color: var(--error-color);" title="Discard the recorded logs">
+            <ha-icon icon="mdi:trash-can-outline"></ha-icon>
           </button>
 
           <button class="toggle-add-btn" id="live-btn" style="display: none;" title="View live log entries">
@@ -1670,12 +1723,20 @@ select.level-select {
           <div id="live-summary" class="recording-summary" style="margin-top: 8px; margin-bottom: 0;"></div>
 
           <div class="dialog-actions" id="live-export-actions">
+            <button class="btn-secondary" id="live-clear-btn" title="Clear all captured entries and start fresh, without stopping the recording">Clear</button>
             <button class="btn-secondary" id="live-save-plain-btn" disabled>Save as .log</button>
             <button class="btn-secondary" id="live-save-jsonl-btn" disabled title="JSON Lines — one JSON object per line (timestamp, level, logger, message, source); easy to process programmatically.">Save as JSONL</button>
             <button class="btn-secondary" id="live-copy-btn" disabled style="margin-right: auto;">Copy to clipboard</button>
+            <button class="btn-danger" id="live-discard-btn" style="display: none;">Discard recording</button>
             <button class="btn-secondary" id="live-close-btn" title="Close this window; the recording continues in the background.">Close &amp; Keep Recording</button>
           </div>
         </div>
+      </div>
+
+      <div class="context-menu" id="preview-context-menu" style="display: none;">
+        <button data-action="plain">Save as .log</button>
+        <button data-action="jsonl">Save as JSONL</button>
+        <button data-action="copy">Copy to clipboard</button>
       </div>
     `;
 
@@ -1692,6 +1753,7 @@ select.level-select {
     this._recordBtn = this.shadowRoot.getElementById("record-btn");
     this._recordIcon = this.shadowRoot.getElementById("record-icon");
     this._recordText = this.shadowRoot.getElementById("record-text");
+    this._discardRecordBtn = this.shadowRoot.getElementById("discard-record-btn");
     this._recordingSetupDialog = this.shadowRoot.getElementById("recording-setup-dialog");
     this._loggerChecklist = this.shadowRoot.getElementById("logger-checklist");
     this._recordingSetupStart = this.shadowRoot.getElementById("recording-setup-start");
@@ -1717,10 +1779,15 @@ select.level-select {
     this._liveSaveJsonlBtn = this.shadowRoot.getElementById("live-save-jsonl-btn");
     this._liveCopyBtn = this.shadowRoot.getElementById("live-copy-btn");
     this._liveCloseBtn = this.shadowRoot.getElementById("live-close-btn");
+    this._liveClearBtn = this.shadowRoot.getElementById("live-clear-btn");
+    this._liveDiscardBtn = this.shadowRoot.getElementById("live-discard-btn");
+    this._previewContextMenu = this.shadowRoot.getElementById("preview-context-menu");
     this._liveBtn = this.shadowRoot.getElementById("live-btn");
 
     this._pathInput.value = this._savedPath;
     this._friendlyNameInput.value = this._savedName;
+    // Preserve a name restored from sessionStorage so auto-fill never clobbers it.
+    this._friendlyNameDirty = this._savedName !== "";
 
     // Delete dialog handlers.
     const closeDelete = () => {
@@ -1860,6 +1927,58 @@ select.level-select {
       this._copyLogsToClipboard();
     });
 
+    this._liveClearBtn.addEventListener("click", () => {
+      this._showDeleteConfirm(
+        "Clear all captured entries? Recording continues.",
+        () => this._clearRecordingBuffer(),
+        "Clear Recording",
+        "Clear"
+      );
+    });
+
+    this._liveDiscardBtn.addEventListener("click", () => {
+      this._showDeleteConfirm(
+        "Discard the recorded logs? This cannot be undone.",
+        () => this._discardRecording(),
+        "Discard Recording",
+        "Discard"
+      );
+    });
+
+    this._discardRecordBtn.addEventListener("click", () => {
+      this._showDeleteConfirm(
+        "Discard the recorded logs? This cannot be undone.",
+        () => this._discardRecording(),
+        "Discard Recording",
+        "Discard"
+      );
+    });
+
+    // Right-click context menu on the preview.
+    this._livePreview.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      this._showPreviewContextMenu(e);
+    });
+    this._livePreview.addEventListener("scroll", () => {
+      this._hidePreviewContextMenu();
+    });
+    this._previewContextMenu.querySelector('[data-action="plain"]').addEventListener("click", () => {
+      this._downloadLogs("plain");
+      this._hidePreviewContextMenu();
+    });
+    this._previewContextMenu.querySelector('[data-action="jsonl"]').addEventListener("click", () => {
+      this._downloadLogs("jsonl");
+      this._hidePreviewContextMenu();
+    });
+    this._previewContextMenu.querySelector('[data-action="copy"]').addEventListener("click", () => {
+      this._copyLogsToClipboard();
+      this._hidePreviewContextMenu();
+    });
+    window.addEventListener("click", () => this._hidePreviewContextMenu());
+
+    // Format selected rows nicely when copying from the preview.
+    this._livePreview.addEventListener("copy", (e) => this._handlePreviewCopy(e));
+
     const toggleSection = () => {
       if (this._isAddSectionVisible) {
         this._closeAddSection();
@@ -1900,10 +2019,32 @@ select.level-select {
       }
     };
 
-    this._pathInput.addEventListener("keydown", handleEscKey);
-    this._friendlyNameInput.addEventListener("keydown", handleEscKey);
+    // Enter moves to the friendly name field; Escape closes the dropdown.
+    this._pathInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        this._optionsList.style.display = "none";
+        this._applyAutoFriendlyName();
+        this._friendlyNameInput.focus();
+      } else if (e.key === "Escape") {
+        handleEscKey(e);
+      }
+    });
+
+    // Enter in the friendly name field saves the logger.
+    this._friendlyNameInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        if (!this._addBtn.disabled) {
+          this._addBtn.click();
+        }
+      } else if (e.key === "Escape") {
+        handleEscKey(e);
+      }
+    });
 
     this._friendlyNameInput.addEventListener("input", () => {
+      this._friendlyNameDirty = true;
       this._persistState();
       this._validateAddButton();
     });
@@ -1981,6 +2122,7 @@ select.level-select {
       item.addEventListener("mousedown", (e) => {
         e.preventDefault();
         this._pathInput.value = opt;
+        this._applyAutoFriendlyName();
         this._persistState();
         this._validateAddButton();
         this._optionsList.style.display = "none";
@@ -2144,6 +2286,7 @@ select.level-select {
             this._pathInput.value = actualLoggerName;
             this._friendlyNameInput.value = displayName;
             this._editingPath = actualLoggerName;
+            this._friendlyNameDirty = true;
 
             if (!this._isAddSectionVisible) {
               this._openAddSection();
@@ -2171,7 +2314,7 @@ select.level-select {
 
         row.querySelector(".remove-btn").addEventListener("click", (e) => {
           e.stopPropagation();
-          this._showDeleteConfirm(displayName, () => {
+          this._showDeleteConfirm(`Remove logger "${displayName}"?`, () => {
             if (!isUnavailable) {
               this._hass.callService("log_manager", "remove_logger", {
                 logger_name: actualLoggerName,
@@ -2252,8 +2395,7 @@ select.level-select {
 
         // Update recording tag when recording state changes.
         const isRecording = this._recordingState === "recording" && this._recordingLoggers.includes(actualLoggerName);
-        if (prev.recording !== isRecording) {
-          const nameDivFirst = row.querySelector(".log-name > div:first-child");
+        if (prev.recording !== isRecording) {          const nameDivFirst = row.querySelector(".log-name > div:first-child");
           if (nameDivFirst) {
             const existingTag = nameDivFirst.querySelector(".recording-tag");
             if (isRecording && !existingTag) {
@@ -2270,8 +2412,7 @@ select.level-select {
         }
 
         // Update pinned tag and selector state when core pinning changes.
-        if (prev.pinned !== isPinned) {
-          const nameDivFirst = row.querySelector(".log-name > div:first-child");
+        if (prev.pinned !== isPinned) {          const nameDivFirst = row.querySelector(".log-name > div:first-child");
           if (nameDivFirst) {
             const existingPin = nameDivFirst.querySelector(".pinned-tag");
             if (isPinned && !existingPin) {
@@ -2646,6 +2787,11 @@ select.level-select {
     this._recordingDuration = 0;
     this._recordingLogCount = 0;
     this._recordingCounts = {};
+    this._recordingBackendCount = 0;
+    this._liveLastId = 0;
+    if (this._livePreview) this._livePreview.innerHTML = "";
+    if (this._liveLoggerFilter) this._liveLoggerFilter.value = "";
+    if (this._liveLevelFilter) this._liveLevelFilter.value = "ALL";
 
     this._updateRecordingUI();
 
@@ -2662,6 +2808,7 @@ select.level-select {
       excludes: excludes || {},
     }).then(res => {
       this._recordingMaxDuration = (res && res.max_duration) || 300;
+      this._openLiveView();
     }).catch(err => {
       console.error("Failed to start recording:", err);
       this._recordingState = null;
@@ -2684,6 +2831,7 @@ select.level-select {
         this._recordingBuffer = res.logs;
         this._recordingDuration = res.duration || 0;
         this._recordingLogCount = res.log_count || 0;
+        this._recordingBackendCount = res.log_count || 0;
         this._recordingState = "results";
         this._recordingCounts = {};
         this._showRecordingResults();
@@ -2702,6 +2850,7 @@ select.level-select {
       type: "log_manager/recording_status"
     }).then(status => {
       this._recordingCounts = status.logger_counts || {};
+      this._recordingBackendCount = status.log_count || 0;
       if (status.max_duration) {
         this._recordingMaxDuration = status.max_duration;
       }
@@ -2710,6 +2859,7 @@ select.level-select {
         this._cleanupLivePolling();
         this._recordingState = "completed";
         this._recordingLogCount = status.log_count || 0;
+        this._recordingBackendCount = status.log_count || 0;
         this._recordingDuration = Math.round(status.elapsed || 0);
         if (this._liveViewOpen) {
           this._fetchResults();
@@ -2730,16 +2880,21 @@ select.level-select {
     this._livePauseBtn.style.display = "none";
     this._liveStopBtn.style.display = "none";
     this._liveCloseBtn.textContent = "Close";
-    this._liveCloseBtn.title = "Data is only available while this view is open.";
+    this._liveCloseBtn.title = "The recorded data stays available until you discard it.";
+    this._liveClearBtn.style.display = "none";
+    this._liveDiscardBtn.style.display = "";
 
     this._liveSavePlainBtn.disabled = !hasEntries;
     this._liveSaveJsonlBtn.disabled = !hasEntries;
     this._liveCopyBtn.disabled = !hasEntries;
+    this._liveSavePlainBtn.title = "Save all recorded entries as a plain-text .log file";
+    this._liveSaveJsonlBtn.title = "Save all recorded entries as JSON Lines (.jsonl) — one JSON object per line (timestamp, level, logger, message, source); easy to process programmatically.";
+    this._liveCopyBtn.title = "Copy all recorded entries to clipboard";
     this._liveSummary.textContent = hasEntries
       ? `Recorded ${count} log entr${count === 1 ? "y" : "ies"} over ${duration} second${duration === 1 ? "" : "s"}.`
       : `No log events matched the configured levels during this session.`;
 
-    let previewHtml = "";
+    let previewHtml = this._previewHeaderHtml();
     logs.slice().reverse().forEach(entry => {
       const time = new Date(entry.timestamp * 1000).toLocaleTimeString(
         undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }
@@ -2748,7 +2903,8 @@ select.level-select {
       const colors = this._levelColors(level);
       const logger = this._escapeHtml(entry.logger);
       const msg = this._escapeHtml(entry.message);
-      previewHtml += `<div class="log-preview-line" style="background: ${colors.rowBg};">
+      previewHtml += `<div class="log-preview-line" data-id="${entry.id}" style="background: ${colors.rowBg};">
+        <span class="log-preview-col idx-col">${entry.id + 1}</span>
         <span class="log-preview-col level-col" style="color: ${colors.color};">${level}</span>
         <span class="log-preview-col time-col">${time}</span>
         <span class="log-preview-col logger-col" title="${this._escapeAttr(entry.logger)}">${logger}</span>
@@ -2761,6 +2917,7 @@ select.level-select {
     } else {
       this._livePreview.innerHTML = `<div style="color: var(--secondary-text-color); font-style: italic;">No log entries were captured.</div>`;
     }
+    this._livePreview.scrollTop = 0;
     this._liveViewOpen = false;
     this._recordingLiveDialog.style.display = "flex";
     requestAnimationFrame(() => {
@@ -2773,17 +2930,15 @@ select.level-select {
     this._liveViewOpen = false;
     this._recordingLiveDialog.classList.remove("visible");
     this._recordingLiveDialog.style.display = "none";
-    // Restore live top bar state for next open.
+    // Restore live top bar state for next open. Filter, entries, and scroll
+    // position are preserved so reopening the view restores the same state.
     this._liveStatusText.parentElement.style.display = "flex";
     this._livePauseBtn.style.display = "";
     this._liveStopBtn.style.display = "";
     this._livePaused = false;
-    this._liveLastId = 0;
-    this._livePreview.innerHTML = "";
-    this._liveLoggerFilter.innerHTML = "";
-    this._liveLevelFilter.value = "ALL";
+    // A completed recording stays available until explicitly discarded.
     if (this._recordingState === "results") {
-      this._recordingState = null;
+      this._recordingState = "completed";
     }
     this._updateRecordingUI();
   }
@@ -2880,6 +3035,7 @@ select.level-select {
       } else if (status.status === "completed") {
         this._recordingState = "completed";
         this._recordingLogCount = status.log_count || 0;
+        this._recordingBackendCount = status.log_count || 0;
         this._recordingDuration = Math.round(status.elapsed || 0);
         this._recordingCounts = status.logger_counts || {};
         this._updateRecordingUI();
@@ -2895,6 +3051,7 @@ select.level-select {
         this._recordingBuffer = res.logs;
         this._recordingDuration = res.duration || 0;
         this._recordingLogCount = res.log_count || 0;
+        this._recordingBackendCount = res.log_count || 0;
         this._recordingState = "results";
         this._showRecordingResults();
       }
@@ -2927,7 +3084,7 @@ select.level-select {
         el.dataset.recBadgeHandler = "true";
         el.addEventListener("click", (e) => {
           e.stopPropagation();
-          this._openLiveView();
+          this._openLiveView(loggerName);
         });
       };
       if (badge) {
@@ -2963,11 +3120,14 @@ select.level-select {
     }
   }
 
-  _openLiveView() {
+  _openLiveView(initialLogger) {
     this._liveViewOpen = true;
     this._livePaused = false;
-    this._liveLastId = 0;
-    this._recordingBuffer = [];
+
+    // Preserve the previous filter selection unless a specific logger was
+    // requested (e.g. from the recording-count badge).
+    const prevLoggerFilter = this._liveLoggerFilter.value;
+    const prevLevelFilter = this._liveLevelFilter.value;
 
     // Build logger filter dropdown.
     let filterHtml = '<option value="">All loggers</option>';
@@ -2979,12 +3139,8 @@ select.level-select {
       filterHtml += `<option value="${this._escapeAttr(name)}">${this._escapeHtml(label)}</option>`;
     });
     this._liveLoggerFilter.innerHTML = filterHtml;
-    this._liveLoggerFilter.value = "";
-    this._liveLevelFilter.value = "ALL";
-    this._livePreview.innerHTML = "";
-
-    // Clear summary (will update on first poll).
-    this._liveSummary.textContent = "";
+    this._liveLoggerFilter.value = initialLogger || prevLoggerFilter;
+    this._liveLevelFilter.value = initialLogger ? "ALL" : prevLevelFilter;
 
     // Show top bar with live controls.
     this._liveStatusText.parentElement.style.display = "flex";
@@ -2994,11 +3150,18 @@ select.level-select {
     this._liveStopBtn.style.display = "";
     this._liveCloseBtn.textContent = "Close & Keep Recording";
     this._liveCloseBtn.title = "Close this window; the recording continues in the background.";
-    this._liveSavePlainBtn.disabled = true;
-    this._liveSaveJsonlBtn.disabled = true;
-    this._liveCopyBtn.disabled = true;
+    this._liveClearBtn.style.display = "";
+    this._liveDiscardBtn.style.display = "none";
+    this._updateExportButtonState();
 
     this._updateLiveTimer();
+
+    if (initialLogger) {
+      this._applyLiveFilters();
+      this._livePreview.scrollTop = 0;
+    }
+    this._updateLiveSummary();
+
     this._recordingLiveDialog.style.display = "flex";
     requestAnimationFrame(() => {
       this._recordingLiveDialog.classList.add("visible");
@@ -3057,6 +3220,7 @@ select.level-select {
 
   _appendLiveEntries(entries) {
     const container = this._livePreview;
+    this._ensurePreviewHeader();
     const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 20;
 
     const levelFilter = this._liveLevelFilter.value;
@@ -3074,8 +3238,10 @@ select.level-select {
       div.className = "log-preview-line";
       div.dataset.logger = entry.logger;
       div.dataset.level = level;
+      div.dataset.id = entry.id;
       div.style.background = colors.rowBg;
-      div.innerHTML = `<span class="log-preview-col level-col" style="color: ${colors.color};">${level}</span>
+      div.innerHTML = `<span class="log-preview-col idx-col">${entry.id + 1}</span>
+        <span class="log-preview-col level-col" style="color: ${colors.color};">${level}</span>
         <span class="log-preview-col time-col">${time}</span>
         <span class="log-preview-col logger-col" title="${this._escapeAttr(entry.logger)}">${logger}</span>
         <span class="log-preview-col msg-col">${msg}</span>`;
@@ -3088,6 +3254,22 @@ select.level-select {
 
     if (atBottom) {
       container.scrollTop = container.scrollHeight;
+    }
+  }
+
+  _previewHeaderHtml() {
+    return `<div class="log-preview-header">
+      <span class="log-preview-col idx-col">#</span>
+      <span class="log-preview-col level-col">Level</span>
+      <span class="log-preview-col time-col">Time</span>
+      <span class="log-preview-col logger-col">Logger</span>
+      <span class="log-preview-col msg-col">Message</span>
+    </div>`;
+  }
+
+  _ensurePreviewHeader() {
+    if (!this._livePreview.querySelector(".log-preview-header")) {
+      this._livePreview.insertAdjacentHTML("afterbegin", this._previewHeaderHtml());
     }
   }
 
@@ -3129,26 +3311,44 @@ select.level-select {
   }
 
   _updateLiveSummary() {
-    const total = this._recordingBuffer.length;
-    const bufferPct = Math.round((total / 10000) * 100);
+    const seen = this._recordingBuffer.length;
+    const hidden = Math.max(0, this._recordingBackendCount - seen);
+    const bufferPct = Math.round((seen / 10000) * 100);
     const recordingCount = this._recordingLoggers.length;
     const withEntries = new Set(this._recordingBuffer.map(entry => entry.logger)).size;
+    const seenText = `${seen} entr${seen === 1 ? "y" : "ies"}${hidden > 0 ? ` (${hidden} hidden)` : ""}`;
     this._liveSummary.textContent =
-      `${total} entr${total === 1 ? "y" : "ies"} \u00B7 buffer at ${bufferPct}% \u00B7 ` +
+      `${seenText} \u00B7 buffer at ${bufferPct}% \u00B7 ` +
       `${recordingCount} logger${recordingCount === 1 ? "" : "s"} recording \u00B7 ` +
       `${withEntries} with entr${withEntries === 1 ? "y" : "ies"}`;
+    this._updateExportButtonState();
+  }
+
+  _updateExportButtonState() {
+    if (!this._liveSavePlainBtn) return;
+    const hasEntries = this._recordingBuffer.length > 0;
+    const scope = this._recordingState === "recording" ? "captured so far" : "all recorded";
+    this._liveSavePlainBtn.disabled = !hasEntries;
+    this._liveSaveJsonlBtn.disabled = !hasEntries;
+    this._liveCopyBtn.disabled = !hasEntries;
+    this._liveSavePlainBtn.title = `Save ${scope} entries as a plain-text .log file`;
+    this._liveSaveJsonlBtn.title = `Save ${scope} entries as JSON Lines (.jsonl) — one JSON object per line (timestamp, level, logger, message, source); easy to process programmatically.`;
+    this._liveCopyBtn.title = `Copy ${scope} entries to clipboard`;
   }
 
   _updateRecordingUI() {
     if (this._recordingState === "stopping") {
       this._recordIcon.setAttribute("icon", "mdi:stop-circle");
       this._recordBtn.classList.add("btn-record");
+      this._recordBtn.classList.remove("btn-view-recording");
       this._recordBtn.title = "Stopping recording...";
       this._recordText.textContent = "Stopping...";
       this._liveBtn.style.display = "none";
+      this._discardRecordBtn.style.display = "none";
     } else if (this._recordingState === "recording") {
       this._recordIcon.setAttribute("icon", "mdi:stop-circle");
       this._recordBtn.classList.add("btn-record");
+      this._recordBtn.classList.remove("btn-view-recording");
       this._recordBtn.title = "Stop recording";
       const elapsed = Math.floor((Date.now() - this._recordingStartTime) / 1000);
       const remaining = Math.max(0, this._recordingMaxDuration - elapsed);
@@ -3156,24 +3356,126 @@ select.level-select {
       const secs = String(remaining % 60).padStart(2, "0");
       this._recordText.textContent = `Stop (${mins}:${secs})`;
       this._liveBtn.style.display = "";
+      this._discardRecordBtn.style.display = "none";
     } else if (this._recordingState === "completed") {
-      this._recordIcon.setAttribute("icon", "mdi:eye");
+      this._recordIcon.setAttribute("icon", "mdi:file-eye-outline");
       this._recordBtn.classList.remove("btn-record");
+      this._recordBtn.classList.add("btn-view-recording");
       this._recordBtn.title = "View recorded logs";
-      this._recordText.textContent = `View (${this._recordingLogCount})`;
+      this._recordText.textContent = `View Recording (${this._recordingLogCount})`;
       this._liveBtn.style.display = "none";
+      this._discardRecordBtn.style.display = "";
     } else if (this._recordingState === "results") {
       this._recordIcon.setAttribute("icon", "mdi:eye-check");
       this._recordBtn.classList.remove("btn-record");
+      this._recordBtn.classList.add("btn-view-recording");
       this._recordBtn.title = "Viewing recording results";
       this._recordText.textContent = "Viewing";
       this._liveBtn.style.display = "none";
+      this._discardRecordBtn.style.display = "";
     } else {
       this._recordIcon.setAttribute("icon", "mdi:record-circle");
       this._recordBtn.classList.remove("btn-record");
+      this._recordBtn.classList.remove("btn-view-recording");
       this._recordBtn.title = "Record log events for export";
       this._recordText.textContent = "Record";
       this._liveBtn.style.display = "none";
+      this._discardRecordBtn.style.display = "none";
+    }
+  }
+
+  _discardRecording() {
+    this._hass.connection.sendMessagePromise({ type: "log_manager/discard_recording" })
+      .then(() => {
+        this._cleanupRecordingIntervals();
+        this._cleanupLivePolling();
+        this._recordingBuffer = [];
+        this._recordingCounts = {};
+        this._recordingBackendCount = 0;
+        this._recordingLogCount = 0;
+        this._recordingState = null;
+        this._liveLastId = 0;
+        this._liveViewOpen = false;
+        if (this._livePreview) this._livePreview.innerHTML = "";
+        if (this._recordingLiveDialog) {
+          this._recordingLiveDialog.classList.remove("visible");
+          this._recordingLiveDialog.style.display = "none";
+        }
+        this._updateRecordingUI();
+        this._updateActiveList();
+      })
+      .catch(err => console.error("Failed to discard recording:", err));
+  }
+
+  _clearRecordingBuffer() {
+    this._hass.connection.sendMessagePromise({ type: "log_manager/clear_recording" })
+      .then(() => {
+        this._recordingBuffer = [];
+        this._recordingCounts = {};
+        this._recordingBackendCount = 0;
+        this._liveLastId = 0;
+        if (this._livePreview) this._livePreview.innerHTML = "";
+        this._updateLiveSummary();
+        this._updateActiveList();
+      })
+      .catch(err => console.error("Failed to clear recording:", err));
+  }
+
+  _showPreviewContextMenu(e) {
+    const hasEntries = this._recordingBuffer.length > 0;
+    const menu = this._previewContextMenu;
+    menu.style.display = "block";
+    menu.style.left = `${e.clientX}px`;
+    menu.style.top = `${e.clientY}px`;
+    menu.querySelectorAll("button").forEach(btn => {
+      btn.disabled = !hasEntries;
+    });
+  }
+
+  _hidePreviewContextMenu() {
+    if (this._previewContextMenu) {
+      this._previewContextMenu.style.display = "none";
+    }
+  }
+
+  _handlePreviewCopy(e) {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
+    const range = selection.getRangeAt(0);
+    if (!range || !this._livePreview.contains(range.startContainer)) return;
+
+    const rowFor = (node) => {
+      if (!node) return null;
+      const el = node.nodeType === 1 ? node : node.parentElement;
+      return el ? el.closest(".log-preview-line") : null;
+    };
+    const startRow = rowFor(range.startContainer);
+    const endRow = rowFor(range.endContainer);
+    if (!startRow || !endRow) return;
+
+    const allRows = Array.from(this._livePreview.querySelectorAll(".log-preview-line"));
+    const startIdx = allRows.indexOf(startRow);
+    const endIdx = allRows.indexOf(endRow);
+    if (startIdx === -1 || endIdx === -1) return;
+    const from = Math.min(startIdx, endIdx);
+    const to = Math.max(startIdx, endIdx);
+
+    const lines = [];
+    for (let i = from; i <= to; i++) {
+      const row = allRows[i];
+      const entry = this._recordingBuffer.find(rec => String(rec.id) === String(row.dataset.id));
+      if (!entry) continue;
+      const time = new Date(entry.timestamp * 1000).toLocaleString(undefined, {
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
+      });
+      const level = entry.level.padEnd(8);
+      const src = entry.source ? ` (${entry.source})` : "";
+      lines.push(`[${time}] ${level} ${entry.logger}  ${entry.message}${src}`);
+    }
+    if (lines.length > 0) {
+      e.preventDefault();
+      e.clipboardData.setData("text/plain", lines.join("\n") + "\n");
     }
   }
 

@@ -1093,6 +1093,81 @@ describe("LogManagerCard", () => {
     });
   });
 
+  describe("recording exclusions", () => {
+    let rec;
+
+    beforeEach(() => {
+      rec = document.createElement("log-manager-card");
+      rec._hass = {
+        states: {
+          "select.test_logger": {
+            attributes: {
+              logger_name: "test.logger",
+              friendly_name: "Test Logger",
+            },
+            state: "NOTSET",
+          },
+        },
+      };
+      rec._loggerChecklist = document.createElement("div");
+      rec._recordingSetupDialog = document.createElement("div");
+      rec._recordingSetupStart = { disabled: false };
+      rec._openRecordingSetup();
+      rec._loggerChecklist
+        .querySelector("input[type='checkbox']:not(#select-all-checkbox)")
+        .checked = true;
+    });
+
+    test("toggle reveals the exclusion input", () => {
+      const area = rec._loggerChecklist.querySelector(".exclude-area");
+      expect(area.style.display).toBe("none");
+
+      rec._loggerChecklist.querySelector(".exclude-toggle").click();
+      expect(area.style.display).toBe("block");
+    });
+
+    test("Enter adds a chip for a valid child path", () => {
+      const inp = rec._loggerChecklist.querySelector(".exclude-input");
+      inp.value = "test.logger.noisy";
+      inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+      const chips = rec._loggerChecklist.querySelectorAll(".exclude-chip");
+      expect(chips.length).toBe(1);
+      expect(chips[0].dataset.path).toBe("test.logger.noisy");
+      expect(inp.value).toBe("");
+    });
+
+    test("non-child paths are rejected and flagged", () => {
+      const inp = rec._loggerChecklist.querySelector(".exclude-input");
+      inp.value = "other.logger";
+      inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+      expect(rec._loggerChecklist.querySelectorAll(".exclude-chip").length).toBe(0);
+      expect(inp.classList.contains("exclude-invalid")).toBe(true);
+    });
+
+    test("editing clears a stale invalid flag", () => {
+      const inp = rec._loggerChecklist.querySelector(".exclude-input");
+      inp.value = "other.logger";
+      inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      expect(inp.classList.contains("exclude-invalid")).toBe(true);
+
+      inp.value = "test.logger.";
+      inp.dispatchEvent(new Event("input", { bubbles: true }));
+      expect(inp.classList.contains("exclude-invalid")).toBe(false);
+    });
+
+    test("collecting excludes returns chips of checked loggers only", () => {
+      const inp = rec._loggerChecklist.querySelector(".exclude-input");
+      inp.value = "test.logger.noisy";
+      inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+      expect(rec._collectRecordingExcludes()).toEqual({
+        "test.logger": ["test.logger.noisy"],
+      });
+    });
+  });
+
   describe("recording export", () => {
     let rec;
     let origCreate;
@@ -1285,77 +1360,3 @@ describe("LogManagerCard", () => {
     });
   });
 });
-  describe("recording exclusions", () => {
-    let rec;
-
-    beforeEach(() => {
-      rec = document.createElement("log-manager-card");
-      rec._hass = {
-        states: {
-          "select.test_logger": {
-            attributes: {
-              logger_name: "test.logger",
-              friendly_name: "Test Logger",
-            },
-            state: "NOTSET",
-          },
-        },
-      };
-      rec._loggerChecklist = document.createElement("div");
-      rec._recordingSetupDialog = document.createElement("div");
-      rec._recordingSetupStart = { disabled: false };
-      rec._openRecordingSetup();
-      rec._loggerChecklist
-        .querySelector("input[type='checkbox']:not(#select-all-checkbox)")
-        .checked = true;
-    });
-
-    test("toggle reveals the exclusion input", () => {
-      const area = rec._loggerChecklist.querySelector(".exclude-area");
-      expect(area.style.display).toBe("none");
-
-      rec._loggerChecklist.querySelector(".exclude-toggle").click();
-      expect(area.style.display).toBe("block");
-    });
-
-    test("Enter adds a chip for a valid child path", () => {
-      const inp = rec._loggerChecklist.querySelector(".exclude-input");
-      inp.value = "test.logger.noisy";
-      inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-
-      const chips = rec._loggerChecklist.querySelectorAll(".exclude-chip");
-      expect(chips.length).toBe(1);
-      expect(chips[0].dataset.path).toBe("test.logger.noisy");
-      expect(inp.value).toBe("");
-    });
-
-    test("non-child paths are rejected and flagged", () => {
-      const inp = rec._loggerChecklist.querySelector(".exclude-input");
-      inp.value = "other.logger";
-      inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-
-      expect(rec._loggerChecklist.querySelectorAll(".exclude-chip").length).toBe(0);
-      expect(inp.classList.contains("exclude-invalid")).toBe(true);
-    });
-
-    test("editing clears a stale invalid flag", () => {
-      const inp = rec._loggerChecklist.querySelector(".exclude-input");
-      inp.value = "other.logger";
-      inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-      expect(inp.classList.contains("exclude-invalid")).toBe(true);
-
-      inp.value = "test.logger.";
-      inp.dispatchEvent(new Event("input", { bubbles: true }));
-      expect(inp.classList.contains("exclude-invalid")).toBe(false);
-    });
-
-    test("collecting excludes returns chips of checked loggers only", () => {
-      const inp = rec._loggerChecklist.querySelector(".exclude-input");
-      inp.value = "test.logger.noisy";
-      inp.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-
-      expect(rec._collectRecordingExcludes()).toEqual({
-        "test.logger": ["test.logger.noisy"],
-      });
-    });
-  });

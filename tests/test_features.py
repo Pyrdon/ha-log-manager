@@ -308,36 +308,6 @@ class TestAlerts:
             )
 
 
-class TestSelectBehaviour:
-    async def test_select_records_audit(self, hass):
-        hass.data[DOMAIN] = {
-            "loggers": {"a": {"friendly_name": "A", "level": "NOTSET"}},
-            "save_data": AsyncMock(),
-        }
-        entity = LogLevelSelect(hass, "a", "A")
-
-        with patch.object(entity, "async_write_ha_state"):
-            await entity.async_select_option("INFO")
-
-        audit = hass.data[DOMAIN]["loggers"]["a"]["audit"]
-        assert audit[0]["source"] == "ui"
-        assert audit[0]["old_level"] == "NOTSET"
-        assert audit[0]["new_level"] == "INFO"
-
-    def test_record_audit_caps_entries_most_recent_first(self):
-        from custom_components.log_manager.const import MAX_AUDIT, record_audit
-
-        info = {}
-        for i in range(MAX_AUDIT + 2):
-            record_audit(info, f"L{i}", f"L{i + 1}", "ui")
-
-        audit = info["audit"]
-        assert len(audit) == MAX_AUDIT
-        assert audit[0]["new_level"] == f"L{MAX_AUDIT + 2}"
-        assert audit[-1]["new_level"] == "L3"
-        assert all("ts" in entry for entry in audit)
-
-
 class TestEffectiveLevel:
     def test_own_level(self):
         logging.getLogger("eff.own").setLevel(logging.INFO)
@@ -449,9 +419,10 @@ class TestCoreSync:
 
         hass.bus.async_fire("logging_changed")
         await hass.async_block_till_done()
-
         assert hass.data[DOMAIN]["loggers"]["pinned"]["level"] == "NOTSET"
 
+
+class TestSelectBehaviour:
     async def test_select_refused_when_pinned(self, hass):
         hass.data[DOMAIN] = {
             "loggers": {"pinned.log": {"friendly_name": "P", "level": "NOTSET"}}
@@ -464,6 +435,34 @@ class TestCoreSync:
         assert entity.current_option == "NOTSET"
         assert hass.data[DOMAIN]["loggers"]["pinned.log"]["level"] == "NOTSET"
         assert "audit" not in hass.data[DOMAIN]["loggers"]["pinned.log"]
+
+    async def test_select_records_audit(self, hass):
+        hass.data[DOMAIN] = {
+            "loggers": {"a": {"friendly_name": "A", "level": "NOTSET"}},
+            "save_data": AsyncMock(),
+        }
+        entity = LogLevelSelect(hass, "a", "A")
+
+        with patch.object(entity, "async_write_ha_state"):
+            await entity.async_select_option("INFO")
+
+        audit = hass.data[DOMAIN]["loggers"]["a"]["audit"]
+        assert audit[0]["source"] == "ui"
+        assert audit[0]["old_level"] == "NOTSET"
+        assert audit[0]["new_level"] == "INFO"
+
+    def test_record_audit_caps_entries_most_recent_first(self):
+        from custom_components.log_manager.const import MAX_AUDIT, record_audit
+
+        info = {}
+        for i in range(MAX_AUDIT + 2):
+            record_audit(info, f"L{i}", f"L{i + 1}", "ui")
+
+        audit = info["audit"]
+        assert len(audit) == MAX_AUDIT
+        assert audit[0]["new_level"] == f"L{MAX_AUDIT + 2}"
+        assert audit[-1]["new_level"] == "L3"
+        assert all("ts" in entry for entry in audit)
 
 
 class TestRecordingExcludes:
@@ -527,6 +526,8 @@ class TestRecordingExcludes:
         result = await client.receive_json()
         assert result["success"] is False
         assert result["error"]["code"] == "invalid_excludes"
+
+
 class TestProfiles:
     async def test_ws_profile_save_get_use_delete(self, hass, hass_ws_client):
         await _setup(hass)
