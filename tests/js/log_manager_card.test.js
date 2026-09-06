@@ -263,6 +263,181 @@ describe("LogManagerCard", () => {
     });
   });
 
+  describe("logger grouping", () => {
+    const groupStates = () => ({
+      "select.core_a": {
+        state: "INFO",
+        attributes: {
+          logger_name: "homeassistant.core.a",
+          friendly_name: "Core A",
+          options: ["NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        },
+      },
+      "select.core_b": {
+        state: "INFO",
+        attributes: {
+          logger_name: "homeassistant.core.b",
+          friendly_name: "Core B",
+          options: ["NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        },
+      },
+      "select.hacs": {
+        state: "INFO",
+        attributes: {
+          logger_name: "custom_components.hacs",
+          friendly_name: "HACS",
+          options: ["NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        },
+      },
+    });
+
+    beforeEach(() => {
+      window.localStorage.removeItem("log_manager_collapsed_groups");
+      delete cardInstance.config;
+      cardInstance._hass = { states: groupStates(), callService: jest.fn() };
+      cardInstance._counters = {};
+      cardInstance._prevRowStates = {};
+      cardInstance._prevPanelHtml = {};
+      cardInstance._expandedLogger = null;
+      cardInstance._recordingCounts = {};
+      cardInstance._recordingState = null;
+      cardInstance._recordingLoggers = [];
+      cardInstance._activeList = document.createElement("div");
+    });
+
+    afterEach(() => {
+      delete cardInstance.config;
+      window.localStorage.removeItem("log_manager_collapsed_groups");
+    });
+
+    test("_groupKey uses the first two dotted segments", () => {
+      expect(cardInstance._groupKey("homeassistant.components.light")).toBe(
+        "homeassistant.components"
+      );
+      expect(cardInstance._groupKey("custom_components.hacs")).toBe(
+        "custom_components.hacs"
+      );
+      expect(cardInstance._groupKey("mylogger")).toBe("mylogger");
+    });
+
+    test("grouped rows render under prefix sections with counts", () => {
+      cardInstance._updateActiveList();
+      const sections = Array.from(
+        cardInstance._activeList.querySelectorAll(":scope > .log-group")
+      );
+      expect(sections.map((s) => s.dataset.group)).toEqual([
+        "custom_components.hacs",
+        "homeassistant.core",
+      ]);
+      const core = sections[1];
+      expect(core.querySelector(".log-group-count").textContent).toBe("(2)");
+      const rows = Array.from(core.querySelectorAll(".log-row"));
+      expect(rows.map((r) => r.dataset.entityId)).toEqual([
+        "select.core_a",
+        "select.core_b",
+      ]);
+    });
+
+    test("group_by_prefix false renders a flat list", () => {
+      cardInstance.config = { type: "custom:log-manager-card", group_by_prefix: false };
+      cardInstance._updateActiveList();
+      expect(
+        cardInstance._activeList.querySelector(".log-group")
+      ).toBeNull();
+      expect(
+        cardInstance._activeList.querySelectorAll(":scope > .log-row").length
+      ).toBe(3);
+    });
+
+    test("collapsing a section hides its rows and persists", () => {
+      cardInstance._updateActiveList();
+      const section = cardInstance._activeList.querySelector(
+        '.log-group[data-group="homeassistant.core"]'
+      );
+      section.querySelector(".log-group-header").click();
+      expect(
+        section.querySelector(".log-group-rows").style.display
+      ).toBe("none");
+      expect(
+        JSON.parse(
+          window.localStorage.getItem("log_manager_collapsed_groups")
+        )
+      ).toEqual({ "homeassistant.core": true });
+
+      // A fresh render restores the collapsed state without rebuilding rows.
+      const before = section.querySelector(
+        '.log-row[data-entity-id="select.core_a"]'
+      );
+      cardInstance._updateActiveList();
+      const after = cardInstance._activeList.querySelector(
+        '.log-row[data-entity-id="select.core_a"]'
+      );
+      expect(after).toBe(before);
+      expect(
+        after.closest(".log-group-rows").style.display
+      ).toBe("none");
+    });
+
+    test("switching to flat mode unwraps sections and restores row order", () => {
+      cardInstance._updateActiveList();
+      expect(
+        cardInstance._activeList.querySelectorAll(":scope > .log-group").length
+      ).toBe(2);
+
+      cardInstance.config = { type: "custom:log-manager-card", group_by_prefix: false };
+      cardInstance._updateActiveList();
+
+      expect(
+        cardInstance._activeList.querySelector(".log-group")
+      ).toBeNull();
+      const rows = Array.from(
+        cardInstance._activeList.querySelectorAll(":scope > .log-row")
+      );
+      expect(rows.map((r) => r.dataset.entityId)).toEqual([
+        "select.core_a",
+        "select.core_b",
+        "select.hacs",
+      ]);
+    });
+
+    test("removing a logger drops its empty section", () => {
+      cardInstance._updateActiveList();
+      expect(
+        cardInstance._activeList.querySelectorAll(":scope > .log-group").length
+      ).toBe(2);
+
+      delete cardInstance._hass.states["select.hacs"];
+      cardInstance._updateActiveList();
+
+      const sections = Array.from(
+        cardInstance._activeList.querySelectorAll(":scope > .log-group")
+      );
+      expect(sections.map((s) => s.dataset.group)).toEqual([
+        "homeassistant.core",
+      ]);
+      expect(sections[0].querySelector(".log-group-count").textContent).toBe(
+        "(2)"
+      );
+    });
+
+    test("a corrupt collapsed-groups value degrades to all expanded", () => {
+      window.localStorage.setItem(
+        "log_manager_collapsed_groups",
+        "null"
+      );
+      cardInstance._updateActiveList();
+      const sections = Array.from(
+        cardInstance._activeList.querySelectorAll(":scope > .log-group")
+      );
+      expect(sections.length).toBe(2);
+      sections.forEach((section) => {
+        expect(
+          section.querySelector(".log-group-rows").style.display
+        ).not.toBe("none");
+      });
+    });
+  });
+
   describe("recording state change", () => {
     let row;
 

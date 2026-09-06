@@ -167,6 +167,76 @@ class LogManagerCard extends HTMLElement {
     return eid || null;
   }
 
+  _groupKey(loggerName) {
+    const parts = String(loggerName || "").split(".");
+    return parts.length >= 2 ? `${parts[0]}.${parts[1]}` : String(loggerName || "");
+  }
+
+  _isGroupingEnabled() {
+    return !this.config || this.config.group_by_prefix !== false;
+  }
+
+  _getCollapsedGroups() {
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem("log_manager_collapsed_groups") || "{}");
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    } catch {
+      // Corrupt JSON falls through to the empty default below.
+    }
+    return {};
+  }
+
+  _setGroupCollapsed(prefix, collapsed) {
+    try {
+      const map = this._getCollapsedGroups();
+      if (collapsed) {
+        map[prefix] = true;
+      } else {
+        delete map[prefix];
+      }
+      window.localStorage.setItem("log_manager_collapsed_groups", JSON.stringify(map));
+    } catch {
+      // Storage unavailable (private mode); collapse state just won't persist.
+    }
+  }
+
+  _ensureGroupSection(prefix, count) {
+    // Compare dataset values directly: prefix characters are HTML-safe here
+    // via _escapeHtml below, but they are not valid CSS-selector escapes.
+    let section = Array.from(this._activeList.children).find(
+      el => el.classList && el.classList.contains("log-group") && el.dataset.group === prefix
+    ) || null;
+    const collapsed = !!this._getCollapsedGroups()[prefix];
+    const chevron = collapsed ? "\u25B8" : "\u25BE";
+    if (!section) {
+      section = document.createElement("div");
+      section.className = "log-group";
+      section.dataset.group = prefix;
+      section.innerHTML = `
+        <div class="log-group-header" title="Toggle section">
+          <span class="log-group-chevron">${chevron}</span>
+          <span class="log-group-name">${this._escapeHtml(prefix)}</span>
+          <span class="log-group-count">(${count})</span>
+        </div>
+        <div class="log-group-rows"></div>`;
+      section.querySelector(".log-group-header").addEventListener("click", (e) => {
+        e.stopPropagation();
+        const nowCollapsed = section.querySelector(".log-group-rows").style.display !== "none";
+        section.querySelector(".log-group-rows").style.display = nowCollapsed ? "none" : "";
+        section.querySelector(".log-group-chevron").textContent = nowCollapsed ? "\u25B8" : "\u25BE";
+        this._setGroupCollapsed(prefix, nowCollapsed);
+      });
+      if (collapsed) {
+        section.querySelector(".log-group-rows").style.display = "none";
+      }
+    } else {
+      section.querySelector(".log-group-chevron").textContent = chevron;
+      section.querySelector(".log-group-count").textContent = `(${count})`;
+      section.querySelector(".log-group-rows").style.display = collapsed ? "none" : "";
+    }
+    return section;
+  }
+
   _getCountLevelInfo(loggerName) {
     const eid = this._findEntityIdByLogger(loggerName);
     if (!eid) return { countLevel: "WARNING", disabled: true };
@@ -633,6 +703,20 @@ class LogManagerCard extends HTMLElement {
           border-color: rgba(var(--rgb-primary-text-color), 0.15);
           box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
         }
+
+        .log-group { display: flex; flex-direction: column; gap: 8px; }
+        .log-group-header {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 13px;
+          font-weight: 500;
+          color: var(--secondary-text-color);
+          cursor: pointer;
+          user-select: none;
+        }
+        .log-group-chevron { display: inline-block; width: 16px; }
+        .log-group-rows { display: flex; flex-direction: column; gap: 8px; }
 
         .action-btn {
           opacity: 0.25;
@@ -2182,6 +2266,36 @@ select.level-select {
 
     const activeEntities = mappedEntities.map(item => item.eid);
 
+    const grouping = this._isGroupingEnabled();
+    let groupOfEid = {};
+    let groupIndexOfEid = {};
+    let groupOrder = [];
+    let itemsByGroup = {};
+    if (grouping) {
+      activeEntities.forEach(eid => {
+        const prefix = this._groupKey(this._hass.states[eid].attributes.logger_name || "");
+        groupOfEid[eid] = prefix;
+        (itemsByGroup[prefix] = itemsByGroup[prefix] || []).push(eid);
+      });
+      Object.keys(itemsByGroup).sort().forEach(prefix => {
+        groupOrder.push(prefix);
+        itemsByGroup[prefix].forEach((eid, groupIndex) => { groupIndexOfEid[eid] = groupIndex; });
+      });
+      // Drop sections for prefixes that no longer exist.
+      Array.from(this._activeList.querySelectorAll(".log-group")).forEach(section => {
+        if (!itemsByGroup[section.dataset.group]) section.remove();
+      });
+    } else {
+      // Flat mode: unwrap any leftover sections from a previous grouped render.
+      Array.from(this._activeList.querySelectorAll(".log-group")).forEach(section => {
+        const container = section.querySelector(".log-group-rows");
+        while (container && container.firstChild) {
+          this._activeList.insertBefore(container.firstChild, section);
+        }
+        section.remove();
+      });
+    }
+
     const existingRows = Array.from(this._activeList.querySelectorAll(".log-row"));
     existingRows.forEach(row => {
       if (!activeEntities.includes(row.dataset.entityId)) row.remove();
@@ -2464,9 +2578,26 @@ select.level-select {
         recordingCount: this._recordingCounts[actualLoggerName] || 0,
       };
 
-      const expectedNode = this._activeList.children[index] || null;
-      if (expectedNode !== row) {
-        this._activeList.insertBefore(row, expectedNode);
+      if (grouping) {
+        const prefix = groupOfEid[eid];
+        const section = this._ensureGroupSection(prefix, itemsByGroup[prefix].length);
+        const sections = Array.from(this._activeList.children).filter(
+          el => el.classList && el.classList.contains("log-group")
+        );
+        const expectedSection = sections[groupOrder.indexOf(prefix)] || null;
+        if (expectedSection !== section) {
+          this._activeList.insertBefore(section, expectedSection);
+        }
+        const container = section.querySelector(".log-group-rows");
+        const expectedRow = container.children[groupIndexOfEid[eid]] || null;
+        if (expectedRow !== row) {
+          container.insertBefore(row, expectedRow);
+        }
+      } else {
+        const expectedNode = this._activeList.children[index] || null;
+        if (expectedNode !== row) {
+          this._activeList.insertBefore(row, expectedNode);
+        }
       }
     });
 

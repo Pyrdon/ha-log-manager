@@ -13,6 +13,7 @@ A dynamic control panel for managing Python loggers in Home Assistant. This cust
 * **Live Log Recording:** Record log output from selected loggers for up to an hour, preview it in real time, then stop to review. Noisy child loggers can be excluded per selected logger. Export the captured entries as a plain-text `.log` file, JSON Lines (`.jsonl`), or copy them to the clipboard. Recorded sessions stay available until you explicitly discard them.
 * **Counter sensors:** Each logger can expose its warning/error counts as sensor entities for history and automations. Opt-in per row via the Sensors toggle in the expanded panel — off by default to avoid entity clutter.
 * **Recording profiles:** Save a recording setup — logger selection, per-logger levels and duration — under a name and rerun it later from the card or from automations via `log_manager.start_recording` with a profile name.
+* **Logger grouping:** The card groups managed loggers by namespace prefix into collapsible sections (on by default; set `group_by_prefix: false` in the card config for a flat list).
 * **Smart UI Card:** Includes a custom Lovelace card with fuzzy searching.
 * **Persistent Configuration:** Active loggers and their levels are saved to Home Assistant storage and restored automatically on reboot.
 
