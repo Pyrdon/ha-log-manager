@@ -33,6 +33,12 @@ class LogManagerCard extends HTMLElement {
     this._liveViewOpen = false;
     this._livePaused = false;
     this._liveLastId = 0;
+    this._liveLastGroup = null;
+    this._liveLastSingle = null;
+    // Plain dedup keys: two distant runs of the same message share one
+    // expansion flag, so expanding one expands both after a rebuild.
+    this._expandedDedupKeys = new Set();
+    this._resultsShown = false;
 
     this._friendlyNameDirty = false;
 
@@ -1650,6 +1656,34 @@ select.level-select {
           filter: brightness(1.2);
         }
 
+        .log-preview-group {
+          display: flex;
+          gap: 8px;
+          padding: 2px 10px;
+          cursor: pointer;
+        }
+
+        .log-preview-group:hover {
+          filter: brightness(1.2);
+        }
+
+        .dedup-count {
+          display: inline-block;
+          margin-left: 8px;
+          padding: 0 7px;
+          border-radius: 11px;
+          font-size: 11px;
+          font-weight: 600;
+          background: rgba(var(--rgb-primary-text-color), 0.12);
+        }
+
+        .log-preview-group-items {
+          display: flex;
+          flex-direction: column;
+          /* Align occurrence times under time-col: 10 + 44 + 8 + 64 + 8. */
+          padding: 2px 10px 2px 134px;
+        }
+
         .log-preview-header {
           display: flex;
           gap: 8px;
@@ -2920,6 +2954,8 @@ select.level-select {
     this._recordingCounts = {};
     this._recordingBackendCount = 0;
     this._liveLastId = 0;
+    this._resetDedupState();
+    this._resultsShown = false;
     if (this._livePreview) this._livePreview.innerHTML = "";
     if (this._liveLoggerFilter) this._liveLoggerFilter.value = "";
     if (this._liveLevelFilter) this._liveLevelFilter.value = "ALL";
@@ -3000,6 +3036,119 @@ select.level-select {
     }).catch(() => {});
   }
 
+  _groupConsecutiveDedup(ordered) {
+    const runs = [];
+    let run = null;
+    const flush = () => {
+      if (run) {
+        runs.push(run);
+        run = null;
+      }
+    };
+    for (const entry of ordered) {
+      const key = this._dedupKey(entry);
+      if (run && run.key === key) {
+        run.count += 1;
+        run.lastTs = entry.timestamp;
+        run.times.push(entry.timestamp);
+        run.ids.push(entry.id);
+      } else {
+        flush();
+        run = {
+          key,
+          logger: entry.logger,
+          level: entry.level,
+          message: entry.message,
+          source: entry.source || "",
+          firstId: entry.id,
+          firstTs: entry.timestamp,
+          lastTs: entry.timestamp,
+          count: 1,
+          times: [entry.timestamp],
+          ids: [entry.id],
+          first: entry,
+        };
+      }
+    }
+    flush();
+    return runs;
+  }
+
+  _resultsLineHtml(entry) {
+    const time = new Date(entry.timestamp * 1000).toLocaleTimeString(
+      undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }
+    );
+    const level = entry.level;
+    const colors = this._levelColors(level);
+    const logger = this._escapeHtml(entry.logger);
+    const msg = this._escapeHtml(entry.message);
+    return `<div class="log-preview-line" data-id="${entry.id}" data-logger="${this._escapeAttr(entry.logger)}" data-level="${this._escapeAttr(level)}" style="background: ${colors.rowBg};">
+      <span class="log-preview-col idx-col">${entry.id + 1}</span>
+      <span class="log-preview-col level-col" style="color: ${colors.color};">${this._escapeHtml(level)}</span>
+      <span class="log-preview-col time-col">${time}</span>
+      <span class="log-preview-col logger-col" title="${this._escapeAttr(entry.logger)}">${logger}</span>
+      <span class="log-preview-col msg-col">${msg}</span>
+    </div>`;
+  }
+
+  _resultsGroupHtml(run) {
+    const colors = this._levelColors(run.level);
+    const logger = this._escapeHtml(run.logger);
+    const msg = this._escapeHtml(run.message);
+    const items = run.times.map(ts => {
+      const time = new Date(ts * 1000).toLocaleTimeString(
+        undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }
+      );
+      return `<div class="log-preview-group-item">${time}</div>`;
+    }).join("");
+    // Results groups always start collapsed; live expansions don't transfer.
+    return `<div class="log-preview-group" data-logger="${this._escapeAttr(run.logger)}" data-level="${this._escapeAttr(run.level)}" data-first-id="${run.firstId}" data-count="${run.count}" data-ids="${this._escapeAttr(run.ids.join(","))}" style="background: ${colors.rowBg};" title="Identical entries grouped — click to expand">
+      <span class="log-preview-col idx-col">${run.firstId + 1}</span>
+      <span class="log-preview-col level-col" style="color: ${colors.color};">${this._escapeHtml(run.level)}</span>
+      <span class="log-preview-col time-col">${this._dedupRangeText(run.firstTs, run.lastTs)}</span>
+      <span class="log-preview-col logger-col" title="${this._escapeAttr(run.logger)}">${logger}</span>
+      <span class="log-preview-col msg-col">${msg}<span class="dedup-count">×${run.count}</span></span>
+    </div><div class="log-preview-group-items" style="display: none;">${items}</div>`;
+  }
+
+  _rebuildResultsPreview() {
+    const container = this._livePreview;
+    if (!container) return;
+    if (this._recordingBuffer.length === 0) {
+      container.innerHTML = `<div style="color: var(--secondary-text-color); font-style: italic;">No log entries were captured.</div>`;
+      return;
+    }
+    const levelFilter = this._liveLevelFilter.value;
+    const loggerFilter = this._liveLoggerFilter.value;
+    let html = this._previewHeaderHtml();
+    const ordered = this._recordingBuffer.slice().reverse();
+    if (!this._isDedupEnabled()) {
+      ordered.forEach(entry => {
+        html += this._resultsLineHtml(entry);
+      });
+    } else {
+      // Newest-first like the results view; filters apply so the visible
+      // stream groups the same way it does while live.
+      for (const run of this._groupConsecutiveDedup(ordered)) {
+        if (!this._entryMatchesFilter({ logger: run.logger, level: run.level }, levelFilter, loggerFilter)) continue;
+        html += run.count === 1 ? this._resultsLineHtml(run.first) : this._resultsGroupHtml(run);
+      }
+    }
+    container.innerHTML = html;
+    // The preview DOM was replaced: live trackers reference detached nodes.
+    this._liveLastGroup = null;
+    this._liveLastSingle = null;
+    container.querySelectorAll(".log-preview-group").forEach(row => {
+      const items = row.nextElementSibling;
+      if (!items || !items.classList.contains("log-preview-group-items")) return;
+      row.addEventListener("click", (e) => {
+        e.stopPropagation();
+        items.style.display = items.style.display === "none" ? "" : "none";
+      });
+    });
+    container.scrollTop = 0;
+  }
+
   _showRecordingResults() {
     const logs = this._recordingBuffer;
     const duration = this._recordingDuration;
@@ -3025,29 +3174,14 @@ select.level-select {
       ? `Recorded ${count} log entr${count === 1 ? "y" : "ies"} over ${duration} second${duration === 1 ? "" : "s"}.`
       : `No log events matched the configured levels during this session.`;
 
-    let previewHtml = this._previewHeaderHtml();
-    logs.slice().reverse().forEach(entry => {
-      const time = new Date(entry.timestamp * 1000).toLocaleTimeString(
-        undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }
-      );
-      const level = entry.level;
-      const colors = this._levelColors(level);
-      const logger = this._escapeHtml(entry.logger);
-      const msg = this._escapeHtml(entry.message);
-      previewHtml += `<div class="log-preview-line" data-id="${entry.id}" style="background: ${colors.rowBg};">
-        <span class="log-preview-col idx-col">${entry.id + 1}</span>
-        <span class="log-preview-col level-col" style="color: ${colors.color};">${level}</span>
-        <span class="log-preview-col time-col">${time}</span>
-        <span class="log-preview-col logger-col" title="${this._escapeAttr(entry.logger)}">${logger}</span>
-        <span class="log-preview-col msg-col">${msg}</span>
-      </div>`;
-    });
-
     if (hasEntries) {
-      this._livePreview.innerHTML = previewHtml;
+      // Live expansions don't transfer: results groups start collapsed.
+      this._expandedDedupKeys.clear();
+      this._rebuildResultsPreview();
     } else {
       this._livePreview.innerHTML = `<div style="color: var(--secondary-text-color); font-style: italic;">No log entries were captured.</div>`;
     }
+    this._resultsShown = true;
     this._livePreview.scrollTop = 0;
     this._liveViewOpen = false;
     this._recordingLiveDialog.style.display = "flex";
@@ -3059,6 +3193,7 @@ select.level-select {
   _closeLiveView() {
     this._cleanupLivePolling();
     this._liveViewOpen = false;
+    this._resultsShown = false;
     this._recordingLiveDialog.classList.remove("visible");
     this._recordingLiveDialog.style.display = "none";
     // Restore live top bar state for next open. Filter, entries, and scroll
@@ -3254,6 +3389,7 @@ select.level-select {
   _openLiveView(initialLogger) {
     this._liveViewOpen = true;
     this._livePaused = false;
+    this._resultsShown = false;
 
     // Preserve the previous filter selection unless a specific logger was
     // requested (e.g. from the recording-count badge).
@@ -3349,6 +3485,174 @@ select.level-select {
     }).catch(() => {});
   }
 
+  _dedupKey(entry) {
+    return `${entry.logger}${entry.level}${entry.message}${entry.source || ""}`;
+  }
+
+  _isDedupEnabled() {
+    return !this.config || this.config.live_dedup !== false;
+  }
+
+  _dedupMinute(ts) {
+    return new Date(ts * 1000).toLocaleTimeString(
+      undefined, { hour: "2-digit", minute: "2-digit", hour12: false }
+    );
+  }
+
+  _dedupRangeText(firstTs, lastTs) {
+    const first = this._dedupMinute(firstTs);
+    const last = this._dedupMinute(lastTs);
+    return first === last ? first : `${first}–${last}`;
+  }
+
+  _dedupRowInnerHtml(run, colors) {
+    const logger = this._escapeHtml(run.logger);
+    const msg = this._escapeHtml(run.message);
+    return `<span class="log-preview-col idx-col">${run.firstId + 1}</span>
+      <span class="log-preview-col level-col" style="color: ${colors.color};">${this._escapeHtml(run.level)}</span>
+      <span class="log-preview-col time-col">${this._dedupRangeText(run.firstTs, run.lastTs)}</span>
+      <span class="log-preview-col logger-col" title="${this._escapeAttr(run.logger)}">${logger}</span>
+      <span class="log-preview-col msg-col">${msg}<span class="dedup-count">×${run.count}</span></span>`;
+  }
+
+  _dedupItemsInnerHtml(run) {
+    return run.times.map(ts => {
+      const time = new Date(ts * 1000).toLocaleTimeString(
+        undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }
+      );
+      return `<div class="log-preview-group-item">${time}</div>`;
+    }).join("");
+  }
+
+  _wireDedupToggle(row, items, key) {
+    row.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const expanded = items.style.display === "none";
+      items.style.display = expanded ? "" : "none";
+      if (expanded) {
+        this._expandedDedupKeys.add(key);
+      } else {
+        this._expandedDedupKeys.delete(key);
+      }
+    });
+  }
+
+  _startDedupGroup(container, firstEntry, secondEntry) {
+    const key = this._dedupKey(firstEntry);
+    const run = {
+      key,
+      logger: firstEntry.logger,
+      level: firstEntry.level,
+      message: firstEntry.message,
+      source: firstEntry.source || "",
+      firstId: firstEntry.id,
+      firstTs: firstEntry.timestamp,
+      lastTs: secondEntry.timestamp,
+      count: 2,
+      times: [firstEntry.timestamp, secondEntry.timestamp],
+    };
+    const colors = this._levelColors(run.level);
+    const row = document.createElement("div");
+    row.className = "log-preview-group";
+    row.dataset.logger = run.logger;
+    row.dataset.level = run.level;
+    row.dataset.firstId = String(run.firstId);
+    row.dataset.count = String(run.count);
+    row.dataset.ids = [firstEntry.id, secondEntry.id].join(",");
+    row.style.background = colors.rowBg;
+    row.title = "Identical entries grouped — click to expand";
+    row.innerHTML = this._dedupRowInnerHtml(run, colors);
+    const items = document.createElement("div");
+    items.className = "log-preview-group-items";
+    items.style.display = this._expandedDedupKeys.has(key) ? "" : "none";
+    items.innerHTML = this._dedupItemsInnerHtml(run);
+    this._wireDedupToggle(row, items, key);
+    container.appendChild(row);
+    container.appendChild(items);
+    return { key, row, items, count: run.count, firstTs: run.firstTs, lastTs: run.lastTs, ids: [firstEntry.id, secondEntry.id] };
+  }
+
+  _bumpDedupGroup(group, entry) {
+    group.count += 1;
+    group.lastTs = entry.timestamp;
+    group.ids.push(entry.id);
+    group.row.querySelector(".dedup-count").textContent = `×${group.count}`;
+    group.row.dataset.count = String(group.count);
+    group.row.dataset.ids = group.ids.join(",");
+    group.row.querySelector(".time-col").textContent = this._dedupRangeText(
+      group.firstTs, group.lastTs
+    );
+    const item = document.createElement("div");
+    item.className = "log-preview-group-item";
+    item.textContent = new Date(entry.timestamp * 1000).toLocaleTimeString(
+      undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }
+    );
+    group.items.appendChild(item);
+  }
+
+  _appendDedupEntry(container, entry) {
+    const key = this._dedupKey(entry);
+    if (this._liveLastGroup && this._liveLastGroup.key === key) {
+      this._bumpDedupGroup(this._liveLastGroup, entry);
+      this._liveLastSingle = null;
+      return;
+    }
+    if (this._liveLastSingle && this._liveLastSingle.key === key) {
+      const first = this._liveLastSingle;
+      const group = this._startDedupGroup(container, first.entry, entry);
+      first.el.remove();
+      this._liveLastGroup = group;
+      this._liveLastSingle = null;
+      return;
+    }
+    const div = document.createElement("div");
+    div.className = "log-preview-line";
+    div.dataset.logger = entry.logger;
+    div.dataset.level = entry.level;
+    div.dataset.id = entry.id;
+    const colors = this._levelColors(entry.level);
+    const time = new Date(entry.timestamp * 1000).toLocaleTimeString(
+      undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }
+    );
+    div.style.background = colors.rowBg;
+    div.innerHTML = `<span class="log-preview-col idx-col">${entry.id + 1}</span>
+      <span class="log-preview-col level-col" style="color: ${colors.color};">${this._escapeHtml(entry.level)}</span>
+      <span class="log-preview-col time-col">${time}</span>
+      <span class="log-preview-col logger-col" title="${this._escapeAttr(entry.logger)}">${this._escapeHtml(entry.logger)}</span>
+      <span class="log-preview-col msg-col">${this._escapeHtml(entry.message)}</span>`;
+    container.appendChild(div);
+    this._liveLastSingle = { key, el: div, entry };
+    this._liveLastGroup = null;
+  }
+
+  _rebuildLivePreview() {
+    const container = this._livePreview;
+    if (!container) return;
+    const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 20;
+    const prevTop = container.scrollTop;
+    const levelFilter = this._liveLevelFilter.value;
+    const loggerFilter = this._liveLoggerFilter.value;
+    container.innerHTML = "";
+    this._ensurePreviewHeader();
+    this._liveLastGroup = null;
+    this._liveLastSingle = null;
+    for (const entry of this._recordingBuffer) {
+      if (!this._entryMatchesFilter(entry, levelFilter, loggerFilter)) continue;
+      this._appendDedupEntry(container, entry);
+    }
+    if (atBottom) {
+      container.scrollTop = container.scrollHeight;
+    } else {
+      container.scrollTop = Math.min(prevTop, container.scrollHeight);
+    }
+  }
+
+  _resetDedupState() {
+    this._liveLastGroup = null;
+    this._liveLastSingle = null;
+    this._expandedDedupKeys.clear();
+  }
+
   _appendLiveEntries(entries) {
     const container = this._livePreview;
     this._ensurePreviewHeader();
@@ -3356,8 +3660,16 @@ select.level-select {
 
     const levelFilter = this._liveLevelFilter.value;
     const loggerFilter = this._liveLoggerFilter.value;
+    const dedup = this._isDedupEnabled();
 
     for (const entry of entries) {
+      if (dedup) {
+        // Filter-hidden entries skip the DOM entirely: they neither render
+        // nor break visible runs, so groups reflect the visible stream.
+        if (!this._entryMatchesFilter(entry, levelFilter, loggerFilter)) continue;
+        this._appendDedupEntry(container, entry);
+        continue;
+      }
       const time = new Date(entry.timestamp * 1000).toLocaleTimeString(
         undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }
       );
@@ -3418,6 +3730,16 @@ select.level-select {
   }
 
   _applyLiveFilters() {
+    if (this._isDedupEnabled()) {
+      // Visible-stream grouping: regroup so hidden entries no longer split
+      // identical visible runs. Results render newest-first, live oldest-first.
+      if (this._resultsShown) {
+        this._rebuildResultsPreview();
+      } else {
+        this._rebuildLivePreview();
+      }
+      return;
+    }
     const levelFilter = this._liveLevelFilter.value;
     const loggerFilter = this._liveLoggerFilter.value;
     this._livePreview.querySelectorAll(".log-preview-line").forEach(el => {
@@ -3526,6 +3848,8 @@ select.level-select {
         this._recordingLogCount = 0;
         this._recordingState = null;
         this._liveLastId = 0;
+        this._resetDedupState();
+        this._resultsShown = false;
         this._liveViewOpen = false;
         if (this._livePreview) this._livePreview.innerHTML = "";
         if (this._recordingLiveDialog) {
@@ -3545,6 +3869,8 @@ select.level-select {
         this._recordingCounts = {};
         this._recordingBackendCount = 0;
         this._liveLastId = 0;
+        this._resetDedupState();
+        this._resultsShown = false;
         if (this._livePreview) this._livePreview.innerHTML = "";
         this._updateLiveSummary();
         this._updateActiveList();
@@ -3575,34 +3901,56 @@ select.level-select {
     const range = selection.getRangeAt(0);
     if (!range || !this._livePreview.contains(range.startContainer)) return;
 
-    const rowFor = (node) => {
-      if (!node) return null;
+    const groupFor = (node) => {
       const el = node.nodeType === 1 ? node : node.parentElement;
-      return el ? el.closest(".log-preview-line") : null;
+      if (!el) return null;
+      const row = el.closest(".log-preview-line, .log-preview-group");
+      if (row) return row;
+      const item = el.closest(".log-preview-group-item");
+      if (item) {
+        const prev = item.parentElement && item.parentElement.previousElementSibling;
+        if (prev && prev.classList.contains("log-preview-group")) return prev;
+      }
+      return null;
     };
-    const startRow = rowFor(range.startContainer);
-    const endRow = rowFor(range.endContainer);
+    const startRow = groupFor(range.startContainer);
+    const endRow = groupFor(range.endContainer);
     if (!startRow || !endRow) return;
 
-    const allRows = Array.from(this._livePreview.querySelectorAll(".log-preview-line"));
+    const allRows = Array.from(this._livePreview.querySelectorAll(".log-preview-line, .log-preview-group"));
     const startIdx = allRows.indexOf(startRow);
     const endIdx = allRows.indexOf(endRow);
     if (startIdx === -1 || endIdx === -1) return;
     const from = Math.min(startIdx, endIdx);
     const to = Math.max(startIdx, endIdx);
 
-    const lines = [];
-    for (let i = from; i <= to; i++) {
-      const row = allRows[i];
-      const entry = this._recordingBuffer.find(rec => String(rec.id) === String(row.dataset.id));
-      if (!entry) continue;
+    const formatEntry = (entry) => {
       const time = new Date(entry.timestamp * 1000).toLocaleString(undefined, {
         year: "numeric", month: "2-digit", day: "2-digit",
         hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
       });
       const level = entry.level.padEnd(8);
       const src = entry.source ? ` (${entry.source})` : "";
-      lines.push(`[${time}] ${level} ${entry.logger}  ${entry.message}${src}`);
+      return `[${time}] ${level} ${entry.logger}  ${entry.message}${src}`;
+    };
+    const lines = [];
+    for (let i = from; i <= to; i++) {
+      const row = allRows[i];
+      if (row.classList.contains("log-preview-group")) {
+        // Expand grouped runs back to their buffer entries via the stored id list.
+        const ids = String(row.dataset.ids || "")
+          .split(",")
+          .filter(s => s !== "")
+          .map(Number);
+        for (const id of ids) {
+          const entry = this._recordingBuffer.find(rec => rec.id === id);
+          if (entry) lines.push(formatEntry(entry));
+        }
+        continue;
+      }
+      const entry = this._recordingBuffer.find(rec => String(rec.id) === String(row.dataset.id));
+      if (!entry) continue;
+      lines.push(formatEntry(entry));
     }
     if (lines.length > 0) {
       e.preventDefault();

@@ -14,6 +14,7 @@ A dynamic control panel for managing Python loggers in Home Assistant. This cust
 * **Counter sensors:** Each logger can expose its warning/error counts as sensor entities for history and automations. Opt-in per row via the Sensors toggle in the expanded panel — off by default to avoid entity clutter.
 * **Recording profiles:** Save a recording setup — logger selection, per-logger levels and duration — under a name and rerun it later from the card or from automations via `log_manager.start_recording` with a profile name.
 * **Logger grouping:** The card groups managed loggers by namespace prefix into collapsible sections (on by default; set `group_by_prefix: false` in the card config for a flat list).
+* **Live-view dedup:** Identical consecutive entries in the live view and results fold into one expandable row with a count and time range (on by default; set `live_dedup: false` in the card config for the raw stream).
 * **Smart UI Card:** Includes a custom Lovelace card with fuzzy searching.
 * **Persistent Configuration:** Active loggers and their levels are saved to Home Assistant storage and restored automatically on reboot.
 

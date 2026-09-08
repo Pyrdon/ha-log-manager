@@ -438,6 +438,285 @@ describe("LogManagerCard", () => {
     });
   });
 
+  describe("live-view dedup", () => {
+    const ts = 1700000000;
+    const mk = (id, dt, logger, level = "ERROR", message = "boom", source = "mod.py") => ({
+      id,
+      timestamp: ts + dt,
+      logger,
+      level,
+      message,
+      source,
+    });
+    const minuteFmt = (t) =>
+      new Date(t * 1000).toLocaleTimeString(undefined, {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      });
+
+    beforeEach(() => {
+      delete cardInstance.config;
+      cardInstance._livePreview = document.createElement("div");
+      cardInstance._liveLevelFilter = { value: "ALL" };
+      cardInstance._liveLoggerFilter = { value: "" };
+      cardInstance._recordingBuffer = [];
+      cardInstance._liveLastGroup = null;
+      cardInstance._liveLastSingle = null;
+      cardInstance._expandedDedupKeys = new Set();
+      cardInstance._resultsShown = false;
+    });
+
+    afterEach(() => {
+      delete cardInstance.config;
+    });
+
+    test("_dedupKey separates source but tolerates a missing one", () => {
+      const a = mk(0, 0, "a.logger");
+      expect(cardInstance._dedupKey(a)).toBe(cardInstance._dedupKey(mk(1, 99, "a.logger")));
+      expect(cardInstance._dedupKey(a)).not.toBe(
+        cardInstance._dedupKey(mk(0, 0, "a.logger", "ERROR", "boom", "other.py"))
+      );
+      const noSource = { id: 0, timestamp: 1, logger: "a.logger", level: "ERROR", message: "boom" };
+      expect(() => cardInstance._dedupKey(noSource)).not.toThrow();
+    });
+
+    test("consecutive identical entries fold into one group", () => {
+      cardInstance._appendLiveEntries([mk(0, 0, "a.logger"), mk(1, 5, "a.logger")]);
+      expect(
+        cardInstance._livePreview.querySelectorAll(".log-preview-line").length
+      ).toBe(0);
+      const groups = cardInstance._livePreview.querySelectorAll(".log-preview-group");
+      expect(groups.length).toBe(1);
+      expect(groups[0].querySelector(".dedup-count").textContent).toBe("×2");
+      expect(groups[0].querySelector(".time-col").textContent).toBe(minuteFmt(ts));
+      expect(
+        groups[0].nextElementSibling.querySelectorAll(".log-preview-group-item").length
+      ).toBe(2);
+    });
+
+    test("a cross-minute group shows a time range", () => {
+      cardInstance._appendLiveEntries([mk(0, 0, "a.logger"), mk(1, 125, "a.logger")]);
+      const time = cardInstance._livePreview.querySelector(
+        ".log-preview-group .time-col"
+      ).textContent;
+      expect(time).toBe(`${minuteFmt(ts)}–${minuteFmt(ts + 125)}`);
+    });
+
+    test("non-consecutive repeats stay separate", () => {
+      cardInstance._appendLiveEntries([
+        mk(0, 0, "a.logger"),
+        mk(1, 1, "b.logger", "ERROR", "other"),
+        mk(2, 2, "a.logger"),
+      ]);
+      expect(
+        cardInstance._livePreview.querySelectorAll(".log-preview-line").length
+      ).toBe(3);
+      expect(
+        cardInstance._livePreview.querySelector(".log-preview-group")
+      ).toBeNull();
+    });
+
+    test("filter-hidden entries neither render nor split visible runs", () => {
+      cardInstance._liveLoggerFilter = { value: "a.logger" };
+      cardInstance._appendLiveEntries([
+        mk(0, 0, "a.logger"),
+        mk(1, 1, "b.logger", "ERROR", "other"),
+        mk(2, 2, "a.logger"),
+      ]);
+      const groups = cardInstance._livePreview.querySelectorAll(".log-preview-group");
+      expect(groups.length).toBe(1);
+      expect(groups[0].querySelector(".dedup-count").textContent).toBe("×2");
+    });
+
+    test("different level, message, or source never merge", () => {
+      for (const [level, message, source] of [
+        ["WARNING", "boom", "mod.py"],
+        ["ERROR", "different", "mod.py"],
+        ["ERROR", "boom", "other.py"],
+      ]) {
+        cardInstance._livePreview.innerHTML = "";
+        cardInstance._liveLastGroup = null;
+        cardInstance._liveLastSingle = null;
+        cardInstance._appendLiveEntries([
+          mk(0, 0, "a.logger"),
+          mk(1, 1, "a.logger", level, message, source),
+        ]);
+        expect(
+          cardInstance._livePreview.querySelectorAll(".log-preview-line").length
+        ).toBe(2);
+      }
+    });
+
+    test("clicking a group expands and collapses its occurrences", () => {
+      cardInstance._appendLiveEntries([mk(0, 0, "a.logger"), mk(1, 5, "a.logger")]);
+      const group = cardInstance._livePreview.querySelector(".log-preview-group");
+      const items = group.nextElementSibling;
+      expect(items.style.display).toBe("none");
+      group.click();
+      expect(items.style.display).toBe("");
+      group.click();
+      expect(items.style.display).toBe("none");
+    });
+
+    test("live_dedup false renders the raw stream", () => {
+      cardInstance.config = { type: "custom:log-manager-card", live_dedup: false };
+      cardInstance._liveLoggerFilter = { value: "a.logger" };
+      cardInstance._appendLiveEntries([
+        mk(0, 0, "a.logger"),
+        mk(1, 1, "b.logger", "ERROR", "other"),
+        mk(2, 2, "a.logger"),
+      ]);
+      expect(
+        cardInstance._livePreview.querySelectorAll(".log-preview-line").length
+      ).toBe(3);
+      expect(
+        cardInstance._livePreview.querySelector(".log-preview-group")
+      ).toBeNull();
+      const hidden = Array.from(
+        cardInstance._livePreview.querySelectorAll(".log-preview-line")
+      ).filter((el) => el.style.display === "none");
+      expect(hidden.length).toBe(1);
+    });
+
+    test("changing filters regroups the visible stream", () => {
+      cardInstance._appendLiveEntries([
+        mk(0, 0, "a.logger"),
+        mk(1, 1, "b.logger", "ERROR", "other"),
+        mk(2, 2, "a.logger"),
+      ]);
+      expect(
+        cardInstance._livePreview.querySelectorAll(".log-preview-line").length
+      ).toBe(3);
+
+      cardInstance._liveLoggerFilter = { value: "a.logger" };
+      cardInstance._recordingBuffer = [
+        mk(0, 0, "a.logger"),
+        mk(1, 1, "b.logger", "ERROR", "other"),
+        mk(2, 2, "a.logger"),
+      ];
+      cardInstance._applyLiveFilters();
+      const groups = cardInstance._livePreview.querySelectorAll(".log-preview-group");
+      expect(groups.length).toBe(1);
+      expect(groups[0].querySelector(".dedup-count").textContent).toBe("×2");
+    });
+
+    test("_groupConsecutiveDedup batches newest-first results runs", () => {
+      const runs = cardInstance._groupConsecutiveDedup([
+        mk(2, 2, "a.logger"),
+        mk(1, 1, "a.logger"),
+        mk(0, 0, "b.logger", "ERROR", "other"),
+      ]);
+      expect(runs.length).toBe(2);
+      expect(runs[0].count).toBe(2);
+      expect(runs[0].firstId).toBe(2);
+      expect(runs[1].count).toBe(1);
+    });
+
+    describe("results view", () => {
+      const stubResultsChrome = () => {
+        cardInstance._liveStatusText = { parentElement: { style: {} } };
+        cardInstance._livePauseBtn = { style: {}, textContent: "", title: "" };
+        cardInstance._liveStopBtn = { style: {} };
+        cardInstance._liveCloseBtn = { style: {}, textContent: "", title: "" };
+        cardInstance._liveClearBtn = { style: {} };
+        cardInstance._liveDiscardBtn = { style: {} };
+        cardInstance._liveSavePlainBtn = { disabled: false, title: "" };
+        cardInstance._liveSaveJsonlBtn = { disabled: false, title: "" };
+        cardInstance._liveCopyBtn = { disabled: false, title: "" };
+        cardInstance._liveSummary = { textContent: "" };
+        cardInstance._recordingLiveDialog = {
+          style: {},
+          classList: { add: jest.fn(), remove: jest.fn() },
+        };
+        cardInstance._recordingDuration = 10;
+        cardInstance._recordingLogCount = 3;
+      };
+
+      let rafSpy;
+      beforeEach(() => {
+        stubResultsChrome();
+        rafSpy = jest
+          .spyOn(window, "requestAnimationFrame")
+          .mockImplementation((cb) => {
+            cb();
+            return 0;
+          });
+      });
+
+      afterEach(() => {
+        rafSpy.mockRestore();
+      });
+
+      test("results group newest-first and filter changes keep that order", () => {
+        cardInstance._recordingBuffer = [
+          mk(0, 0, "a.logger"),
+          mk(1, 1, "a.logger"),
+          mk(2, 2, "b.logger", "ERROR", "other"),
+        ];
+        cardInstance._showRecordingResults();
+        let groups = cardInstance._livePreview.querySelectorAll(".log-preview-group");
+        expect(groups.length).toBe(1);
+
+        // Changing filters must not flip results into oldest-first live order.
+        cardInstance._liveLoggerFilter = { value: "" };
+        cardInstance._applyLiveFilters();
+        const rows = Array.from(
+          cardInstance._livePreview.querySelectorAll(
+            ".log-preview-line, .log-preview-group"
+          )
+        );
+        expect(rows.length).toBe(2);
+        // Newest-first: the lone "other" line, then the folded a.logger pair.
+        expect(rows[0].querySelector(".msg-col").textContent).toContain("other");
+        expect(rows[1].className).toContain("log-preview-group");
+        expect(rows[1].querySelector(".dedup-count").textContent).toBe("×2");
+      });
+
+      test("showing results clears live expansions", () => {
+        cardInstance._expandedDedupKeys.add("a.logger\x1fERROR\x1fboom\x1fmod.py");
+        cardInstance._recordingBuffer = [mk(0, 0, "a.logger"), mk(1, 5, "a.logger")];
+        cardInstance._showRecordingResults();
+        expect(cardInstance._expandedDedupKeys.size).toBe(0);
+        const items = cardInstance._livePreview.querySelector(
+          ".log-preview-group-items"
+        );
+        expect(items.style.display).toBe("none");
+      });
+
+      test("copying across a group emits every grouped entry", () => {
+        cardInstance._recordingBuffer = [mk(0, 0, "a.logger"), mk(1, 5, "a.logger")];
+        cardInstance._showRecordingResults();
+        const group = cardInstance._livePreview.querySelector(".log-preview-group");
+        const range = {
+          startContainer: group.querySelector(".msg-col").firstChild,
+          endContainer: group.querySelector(".msg-col").firstChild,
+          collapsed: false,
+        };
+        const selection = {
+          rangeCount: 1,
+          isCollapsed: false,
+          getRangeAt: () => range,
+        };
+        const event = {
+          preventDefault: jest.fn(),
+          clipboardData: { setData: jest.fn() },
+        };
+        const realSelection = window.getSelection;
+        window.getSelection = () => selection;
+        try {
+          cardInstance._handlePreviewCopy(event);
+        } finally {
+          window.getSelection = realSelection;
+        }
+        expect(event.preventDefault).toHaveBeenCalled();
+        const text = event.clipboardData.setData.mock.calls[0][1];
+        expect(text.split("\n").filter(Boolean)).toHaveLength(2);
+        expect(text).toContain("boom");
+      });
+    });
+  });
+
   describe("recording state change", () => {
     let row;
 
