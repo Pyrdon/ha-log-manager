@@ -717,6 +717,197 @@ describe("LogManagerCard", () => {
     });
   });
 
+  describe("results summary", () => {
+    const ts = 1700000000;
+    const mk = (id, dt, logger, level = "ERROR", message = "boom", source = "mod.py") => ({
+      id,
+      timestamp: ts + dt,
+      logger,
+      level,
+      message,
+      source,
+    });
+    const buf = () => [
+      mk(0, 0, "a.logger", "ERROR", "boom"),
+      mk(1, 5, "a.logger", "ERROR", "boom"),
+      mk(2, 6, "a.logger", "WARNING", "careful"),
+      mk(3, 7, "b.logger", "INFO", "hello"),
+    ];
+
+    const stubResultsChrome = () => {
+      cardInstance._liveStatusText = { parentElement: { style: {} } };
+      cardInstance._livePauseBtn = { style: {}, textContent: "", title: "" };
+      cardInstance._liveStopBtn = { style: {} };
+      cardInstance._liveCloseBtn = { style: {}, textContent: "", title: "" };
+      cardInstance._liveClearBtn = { style: {} };
+      cardInstance._liveDiscardBtn = { style: {} };
+      cardInstance._liveSavePlainBtn = { disabled: false, title: "" };
+      cardInstance._liveSaveJsonlBtn = { disabled: false, title: "" };
+      cardInstance._liveCopyBtn = { disabled: false, title: "" };
+      cardInstance._liveSummary = { textContent: "" };
+      cardInstance._recordingLiveDialog = {
+        style: {},
+        classList: { add: jest.fn(), remove: jest.fn() },
+      };
+      cardInstance._recordingDuration = 10;
+    };
+
+    let rafSpy;
+    beforeEach(() => {
+      delete cardInstance.config;
+      const wrap = document.createElement("div");
+      cardInstance._livePreview = document.createElement("div");
+      wrap.appendChild(cardInstance._livePreview);
+      document.body.appendChild(wrap);
+      cardInstance._liveLevelFilter = { value: "ALL" };
+      cardInstance._liveLoggerFilter = { value: "" };
+      cardInstance._recordingBuffer = [];
+      cardInstance._liveLastGroup = null;
+      cardInstance._liveLastSingle = null;
+      cardInstance._expandedDedupKeys = new Set();
+      cardInstance._resultsShown = false;
+      cardInstance._resultsSummaryFilter = null;
+      stubResultsChrome();
+      rafSpy = jest.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+        cb();
+        return 0;
+      });
+    });
+
+    afterEach(() => {
+      rafSpy.mockRestore();
+      delete cardInstance.config;
+      cardInstance._livePreview.parentElement.remove();
+    });
+
+    test("_summarizeResults totals severity, loggers, and repeats", () => {
+      const summary = cardInstance._summarizeResults(buf());
+      expect(summary.total).toBe(4);
+      expect(summary.severity).toEqual([
+        { level: "INFO", count: 1 },
+        { level: "WARNING", count: 1 },
+        { level: "ERROR", count: 2 },
+      ]);
+      expect(summary.loggers.top).toEqual([
+        { label: "a.logger", logger: "a.logger", count: 3, sortKey: "a.logger" },
+        { label: "b.logger", logger: "b.logger", count: 1, sortKey: "b.logger" },
+      ]);
+      expect(summary.loggers.more).toBe(0);
+      expect(summary.repeats.top[0].count).toBe(2);
+      expect(summary.repeats.top[0].message).toBe("boom");
+    });
+
+    test("_summarizeResults caps lists at five with overflow notes", () => {
+      const logs = [];
+      for (let i = 0; i < 7; i++) {
+        logs.push(mk(i, i, `l${i}.mod`, "ERROR", `msg${i}`));
+      }
+      const summary = cardInstance._summarizeResults(logs);
+      expect(summary.loggers.top).toHaveLength(5);
+      expect(summary.loggers.more).toBe(2);
+      expect(summary.repeats.top).toHaveLength(5);
+      expect(summary.repeats.more).toBe(2);
+    });
+
+    test("results show a clickable summary block", () => {
+      cardInstance._recordingBuffer = buf();
+      cardInstance._recordingLogCount = 4;
+      cardInstance._showRecordingResults();
+      const block = cardInstance._livePreview.parentElement.querySelector("#results-summary");
+      expect(block.style.display).not.toBe("none");
+      expect(block.querySelectorAll('[data-filter-type="level"]').length).toBe(3);
+      expect(block.querySelectorAll('[data-filter-type="logger"]').length).toBe(2);
+      expect(block.querySelectorAll('[data-filter-type="repeat"]').length).toBe(3);
+      expect(block.textContent).toContain("ERROR 2");
+    });
+
+    test("clicking a severity row drives the level filter", () => {
+      cardInstance._recordingBuffer = buf();
+      cardInstance._recordingLogCount = 4;
+      cardInstance._showRecordingResults();
+      const block = cardInstance._livePreview.parentElement.querySelector("#results-summary");
+      block.querySelector('[data-filter-type="level"][data-filter-value="ERROR"]').click();
+      expect(cardInstance._liveLevelFilter.value).toBe("ERROR");
+      expect(
+        cardInstance._livePreview.querySelectorAll(
+          ".log-preview-line, .log-preview-group"
+        ).length
+      ).toBe(1);
+    });
+
+    test("clicking a repeat row hides the rest and toggles back", () => {
+      cardInstance._recordingBuffer = buf();
+      cardInstance._recordingLogCount = 4;
+      cardInstance._showRecordingResults();
+      const key = cardInstance._dedupKey(buf()[0]);
+      const block = cardInstance._livePreview.parentElement.querySelector("#results-summary");
+      const row = block.querySelector(`[data-filter-type="repeat"][data-filter-value="${key}"]`);
+      row.click();
+      let visible = Array.from(
+        cardInstance._livePreview.querySelectorAll(".log-preview-line, .log-preview-group")
+      ).filter((el) => el.style.display !== "none");
+      expect(visible).toHaveLength(1);
+      expect(visible[0].className).toContain("log-preview-group");
+
+      block.querySelector(`[data-filter-type="repeat"][data-filter-value="${key}"]`).click();
+      visible = Array.from(
+        cardInstance._livePreview.querySelectorAll(".log-preview-line, .log-preview-group")
+      ).filter((el) => el.style.display !== "none");
+      expect(visible.length).toBe(3);
+    });
+
+    test("empty captures show no summary block", () => {
+      cardInstance._recordingBuffer = [];
+      cardInstance._recordingLogCount = 0;
+      cardInstance._showRecordingResults();
+      const block = cardInstance._livePreview.parentElement.querySelector("#results-summary");
+      expect(block === null || block.style.display === "none").toBe(true);
+    });
+
+    test("clicking an active level row toggles the filter off", () => {
+      cardInstance._recordingBuffer = buf();
+      cardInstance._recordingLogCount = 4;
+      cardInstance._showRecordingResults();
+      const sel = '[data-filter-type="level"][data-filter-value="ERROR"]';
+      const block = () => cardInstance._livePreview.parentElement.querySelector("#results-summary");
+      block().querySelector(sel).click();
+      expect(cardInstance._liveLevelFilter.value).toBe("ERROR");
+      expect(block().querySelector(sel).className).toContain("active");
+      block().querySelector(sel).click();
+      expect(cardInstance._liveLevelFilter.value).toBe("ALL");
+    });
+
+    test("hostile strings are escaped and long messages truncate with full title", () => {
+      const long = "x".repeat(100);
+      cardInstance._recordingBuffer = [
+        { id: 0, timestamp: ts, logger: `a".logger`, level: "ERROR", message: `<b>${long}</b>`, source: "m.py" },
+      ];
+      cardInstance._recordingLogCount = 1;
+      cardInstance._showRecordingResults();
+      const block = cardInstance._livePreview.parentElement.querySelector("#results-summary");
+      const html = block.innerHTML;
+      // Quotes are escaped in attributes; angle brackets inside quoted
+      // attribute values are literal text, not markup: no <b> ELEMENT parses.
+      expect(html).toContain("a&quot;.logger");
+      expect(block.querySelector("b")).toBeNull();
+      expect(block.textContent).toContain("<b>");
+      const row = block.querySelector('[data-filter-type="repeat"]');
+      expect(row.textContent).toContain("…");
+      expect(row.title).toContain(`<b>${long}</b>`);
+    });
+
+    test("non-standard levels render as plain non-clickable text", () => {
+      cardInstance._recordingBuffer = [
+        { id: 0, timestamp: ts, logger: "a.logger", level: "NOTSET", message: "m", source: "" },
+      ];
+      cardInstance._recordingLogCount = 1;
+      cardInstance._showRecordingResults();
+      const block = cardInstance._livePreview.parentElement.querySelector("#results-summary");
+      expect(block.textContent).toContain("NOTSET 1");
+      expect(block.querySelector('[data-filter-value="NOTSET"]')).toBeNull();
+    });
+  });
+
   describe("recording state change", () => {
     let row;
 

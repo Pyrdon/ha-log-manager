@@ -39,6 +39,7 @@ class LogManagerCard extends HTMLElement {
     // expansion flag, so expanding one expands both after a rebuild.
     this._expandedDedupKeys = new Set();
     this._resultsShown = false;
+    this._resultsSummaryFilter = null;
 
     this._friendlyNameDirty = false;
 
@@ -1684,6 +1685,42 @@ select.level-select {
           padding: 2px 10px 2px 134px;
         }
 
+        .results-summary {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          margin-bottom: 8px;
+          font-size: 13px;
+        }
+
+        .results-summary-row {
+          display: flex;
+          align-items: baseline;
+          gap: 6px;
+          cursor: pointer;
+          border-radius: 4px;
+          padding: 1px 6px;
+        }
+
+        .results-summary-row:hover {
+          background: rgba(var(--rgb-primary-text-color), 0.06);
+        }
+
+        .results-summary-row.active {
+          background: rgba(var(--rgb-primary-text-color), 0.12);
+        }
+
+        .results-summary-label {
+          color: var(--secondary-text-color);
+          min-width: 110px;
+        }
+
+        .results-summary-more {
+          color: var(--secondary-text-color);
+          font-style: italic;
+          padding: 1px 6px;
+        }
+
         .log-preview-header {
           display: flex;
           gap: 8px;
@@ -2956,6 +2993,7 @@ select.level-select {
     this._liveLastId = 0;
     this._resetDedupState();
     this._resultsShown = false;
+    this._hideResultsSummary();
     if (this._livePreview) this._livePreview.innerHTML = "";
     if (this._liveLoggerFilter) this._liveLoggerFilter.value = "";
     if (this._liveLevelFilter) this._liveLevelFilter.value = "ALL";
@@ -3082,7 +3120,7 @@ select.level-select {
     const colors = this._levelColors(level);
     const logger = this._escapeHtml(entry.logger);
     const msg = this._escapeHtml(entry.message);
-    return `<div class="log-preview-line" data-id="${entry.id}" data-logger="${this._escapeAttr(entry.logger)}" data-level="${this._escapeAttr(level)}" style="background: ${colors.rowBg};">
+    return `<div class="log-preview-line" data-id="${entry.id}" data-logger="${this._escapeAttr(entry.logger)}" data-level="${this._escapeAttr(level)}" data-key="${this._escapeAttr(this._dedupKey(entry))}" style="background: ${colors.rowBg};">
       <span class="log-preview-col idx-col">${entry.id + 1}</span>
       <span class="log-preview-col level-col" style="color: ${colors.color};">${this._escapeHtml(level)}</span>
       <span class="log-preview-col time-col">${time}</span>
@@ -3102,7 +3140,7 @@ select.level-select {
       return `<div class="log-preview-group-item">${time}</div>`;
     }).join("");
     // Results groups always start collapsed; live expansions don't transfer.
-    return `<div class="log-preview-group" data-logger="${this._escapeAttr(run.logger)}" data-level="${this._escapeAttr(run.level)}" data-first-id="${run.firstId}" data-count="${run.count}" data-ids="${this._escapeAttr(run.ids.join(","))}" style="background: ${colors.rowBg};" title="Identical entries grouped — click to expand">
+    return `<div class="log-preview-group" data-logger="${this._escapeAttr(run.logger)}" data-level="${this._escapeAttr(run.level)}" data-key="${this._escapeAttr(run.key)}" data-first-id="${run.firstId}" data-count="${run.count}" data-ids="${this._escapeAttr(run.ids.join(","))}" style="background: ${colors.rowBg};" title="Identical entries grouped — click to expand">
       <span class="log-preview-col idx-col">${run.firstId + 1}</span>
       <span class="log-preview-col level-col" style="color: ${colors.color};">${this._escapeHtml(run.level)}</span>
       <span class="log-preview-col time-col">${this._dedupRangeText(run.firstTs, run.lastTs)}</span>
@@ -3149,6 +3187,152 @@ select.level-select {
     container.scrollTop = 0;
   }
 
+  _summarizeResults(logs) {
+    const severityOrder = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"];
+    const severity = {};
+    const loggers = {};
+    const repeats = {};
+    for (const entry of logs) {
+      severity[entry.level] = (severity[entry.level] || 0) + 1;
+      loggers[entry.logger] = (loggers[entry.logger] || 0) + 1;
+      const key = this._dedupKey(entry);
+      if (!repeats[key]) {
+        repeats[key] = {
+          key,
+          logger: entry.logger,
+          level: entry.level,
+          message: entry.message,
+          count: 0,
+        };
+      }
+      repeats[key].count += 1;
+    }
+    const top = (rows, limit) => {
+      // Code-unit tie-break: locale-independent so top-5 picks are stable.
+      const sorted = rows.slice().sort((a, b) => b.count - a.count || (a.sortKey < b.sortKey ? -1 : a.sortKey > b.sortKey ? 1 : 0));
+      return { top: sorted.slice(0, limit), more: Math.max(0, sorted.length - limit) };
+    };
+    const loggerRows = Object.entries(loggers).map(([name, count]) => (
+      { label: name, logger: name, count, sortKey: name }
+    ));
+    const repeatRows = Object.values(repeats).map(row => ({ ...row, sortKey: row.key }));
+    return {
+      total: logs.length,
+      severity: severityOrder
+        .filter(level => severity[level] > 0)
+        .map(level => ({ level, count: severity[level] }))
+        // Non-standard levels (e.g. NOTSET) trail after the ordered ones.
+        .concat(Object.keys(severity).filter(level => !severityOrder.includes(level)).sort().map(level => ({ level, count: severity[level] }))),
+      loggers: top(loggerRows, 5),
+      repeats: top(repeatRows, 5),
+    };
+  }
+
+  _ensureResultsSummaryEl() {
+    const host = this._livePreview && this._livePreview.parentElement;
+    if (!host) return null;
+    let el = host.querySelector("#results-summary");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "results-summary";
+      el.className = "results-summary";
+      el.style.display = "none";
+      host.insertBefore(el, this._livePreview);
+    }
+    return el;
+  }
+
+  _hideResultsSummary() {
+    this._resultsSummaryFilter = null;
+    const host = this._livePreview && this._livePreview.parentElement;
+    const el = host && host.querySelector("#results-summary");
+    if (el) el.style.display = "none";
+  }
+
+  _renderResultsSummary() {
+    const el = this._ensureResultsSummaryEl();
+    if (!el) return;
+    const summary = this._summarizeResults(this._recordingBuffer);
+    if (summary.total === 0) {
+      el.style.display = "none";
+      el.innerHTML = "";
+      return;
+    }
+    const active = this._resultsSummaryFilter;
+    const esc = (s) => this._escapeHtml(String(s == null ? "" : s));
+    const escAttr = (s) => this._escapeAttr(String(s == null ? "" : s));
+    const sevLine = summary.severity.map(({ level, count }) => {
+      const colors = this._levelColors(level);
+      const label = `${level} ${count}`;
+      // Only standard severities map onto the minimum-level dropdown.
+      if (!["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"].includes(level)) {
+        return `<span style="color: ${colors.color};">${esc(label)}</span>`;
+      }
+      const isActive = this._liveLevelFilter && this._liveLevelFilter.value === level;
+      return `<span class="results-summary-row${isActive ? " active" : ""}" data-filter-type="level" data-filter-value="${escAttr(level)}" title="Show only ${escAttr(level)} and above"><span style="color: ${colors.color};">${esc(label)}</span></span>`;
+    }).join(" · ");
+    const loggerRows = summary.loggers.top.map(({ label, logger, count }) => {
+      const isActive = this._liveLoggerFilter && this._liveLoggerFilter.value === logger;
+      return `<div class="results-summary-row${isActive ? " active" : ""}" data-filter-type="logger" data-filter-value="${escAttr(logger)}" title="Show only ${escAttr(label)}"><span class="results-summary-label">${esc(label)}</span><span>${count}</span></div>`;
+    }).join("") + (summary.loggers.more > 0 ? `<div class="results-summary-more">+${summary.loggers.more} more</div>` : "");
+    const repeatRows = summary.repeats.top.map(({ key, logger, level, message, count }) => {
+      const text = String(message == null ? "" : message);
+      const short = text.length > 80 ? text.slice(0, 80) + "…" : text;
+      const isActive = active && active.type === "repeat" && active.value === key;
+      return `<div class="results-summary-row${isActive ? " active" : ""}" data-filter-type="repeat" data-filter-value="${escAttr(key)}" title="${escAttr(text)}"><span class="results-summary-label">${esc(logger)} ${esc(level)}</span><span>${esc(short)} <strong>×${count}</strong></span></div>`;
+    }).join("") + (summary.repeats.more > 0 ? `<div class="results-summary-more">+${summary.repeats.more} more</div>` : "");
+    el.innerHTML = `<div>${sevLine}</div>${loggerRows}${repeatRows}`;
+    el.style.display = "";
+    el.querySelectorAll(".results-summary-row").forEach(row => {
+      row.addEventListener("click", () => this._onSummaryRowClick(row));
+    });
+  }
+
+  _onSummaryRowClick(row) {
+    const type = row.dataset.filterType;
+    const value = row.dataset.filterValue;
+    const active = this._resultsSummaryFilter;
+    if (active && active.type === type && active.value === value) {
+      // Toggle off: restore the dropdown-driven view.
+      this._resultsSummaryFilter = null;
+      this._rebuildResultsPreview();
+      this._renderResultsSummary();
+      return;
+    }
+    if (type === "level") {
+      this._resultsSummaryFilter = null;
+      // Toggle off restores the unfiltered view.
+      this._liveLevelFilter.value = this._liveLevelFilter.value === value ? "ALL" : value;
+      this._rebuildResultsPreview();
+      this._renderResultsSummary();
+    } else if (type === "logger") {
+      this._resultsSummaryFilter = null;
+      this._liveLoggerFilter.value = this._liveLoggerFilter.value === value ? "" : value;
+      this._rebuildResultsPreview();
+      this._renderResultsSummary();
+    } else if (type === "repeat") {
+      // Hide-only overlay on the rendered runs: no regroup, counts untouched.
+      this._resultsSummaryFilter = { type, value };
+      this._applySummaryRepeatFilter();
+      this._renderResultsSummary();
+    }
+  }
+
+  _applySummaryRepeatFilter() {
+    const filter = this._resultsSummaryFilter;
+    if (!filter || filter.type !== "repeat" || !this._livePreview) return;
+    this._livePreview
+      .querySelectorAll(".log-preview-line, .log-preview-group")
+      .forEach(el => {
+        const show = el.dataset.key === filter.value;
+        el.style.display = show ? "" : "none";
+        const items = el.nextElementSibling;
+        if (items && items.classList.contains("log-preview-group-items")) {
+          items.style.display = show ? items.style.display : "none";
+        }
+      });
+  }
+
   _showRecordingResults() {
     const logs = this._recordingBuffer;
     const duration = this._recordingDuration;
@@ -3178,7 +3362,9 @@ select.level-select {
       // Live expansions don't transfer: results groups start collapsed.
       this._expandedDedupKeys.clear();
       this._rebuildResultsPreview();
+      this._renderResultsSummary();
     } else {
+      this._hideResultsSummary();
       this._livePreview.innerHTML = `<div style="color: var(--secondary-text-color); font-style: italic;">No log entries were captured.</div>`;
     }
     this._resultsShown = true;
@@ -3194,6 +3380,7 @@ select.level-select {
     this._cleanupLivePolling();
     this._liveViewOpen = false;
     this._resultsShown = false;
+    this._hideResultsSummary();
     this._recordingLiveDialog.classList.remove("visible");
     this._recordingLiveDialog.style.display = "none";
     // Restore live top bar state for next open. Filter, entries, and scroll
@@ -3390,6 +3577,7 @@ select.level-select {
     this._liveViewOpen = true;
     this._livePaused = false;
     this._resultsShown = false;
+    this._hideResultsSummary();
 
     // Preserve the previous filter selection unless a specific logger was
     // requested (e.g. from the recording-count badge).
@@ -3556,6 +3744,7 @@ select.level-select {
     row.className = "log-preview-group";
     row.dataset.logger = run.logger;
     row.dataset.level = run.level;
+    row.dataset.key = run.key;
     row.dataset.firstId = String(run.firstId);
     row.dataset.count = String(run.count);
     row.dataset.ids = [firstEntry.id, secondEntry.id].join(",");
@@ -3609,6 +3798,7 @@ select.level-select {
     div.className = "log-preview-line";
     div.dataset.logger = entry.logger;
     div.dataset.level = entry.level;
+    div.dataset.key = key;
     div.dataset.id = entry.id;
     const colors = this._levelColors(entry.level);
     const time = new Date(entry.timestamp * 1000).toLocaleTimeString(
@@ -3681,6 +3871,7 @@ select.level-select {
       div.className = "log-preview-line";
       div.dataset.logger = entry.logger;
       div.dataset.level = level;
+      div.dataset.key = this._dedupKey(entry);
       div.dataset.id = entry.id;
       div.style.background = colors.rowBg;
       div.innerHTML = `<span class="log-preview-col idx-col">${entry.id + 1}</span>
@@ -3730,6 +3921,8 @@ select.level-select {
   }
 
   _applyLiveFilters() {
+    // A dropdown change replaces any summary repeat overlay: single-select.
+    this._resultsSummaryFilter = null;
     if (this._isDedupEnabled()) {
       // Visible-stream grouping: regroup so hidden entries no longer split
       // identical visible runs. Results render newest-first, live oldest-first.
@@ -3738,6 +3931,7 @@ select.level-select {
       } else {
         this._rebuildLivePreview();
       }
+      if (this._resultsShown) this._renderResultsSummary();
       return;
     }
     const levelFilter = this._liveLevelFilter.value;
@@ -3850,6 +4044,7 @@ select.level-select {
         this._liveLastId = 0;
         this._resetDedupState();
         this._resultsShown = false;
+        this._hideResultsSummary();
         this._liveViewOpen = false;
         if (this._livePreview) this._livePreview.innerHTML = "";
         if (this._recordingLiveDialog) {
@@ -3871,6 +4066,7 @@ select.level-select {
         this._liveLastId = 0;
         this._resetDedupState();
         this._resultsShown = false;
+        this._hideResultsSummary();
         if (this._livePreview) this._livePreview.innerHTML = "";
         this._updateLiveSummary();
         this._updateActiveList();
