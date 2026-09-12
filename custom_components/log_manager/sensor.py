@@ -1,8 +1,8 @@
 """Sensor platform exposing per-logger warning/error counters.
 
-Sensors are opt-in per logger (``sensor_enabled`` in the stored config).
-They track the counter handler's live counts and update on every counters
-signal so automations and history can react to a logger's traffic.
+A warning sensor and an error sensor exist automatically for every managed
+logger. They track the counter handler's live counts and update on every
+counters signal so automations and history can react to a logger's traffic.
 """
 
 import hashlib
@@ -61,7 +61,7 @@ class LogCounterSensor(SensorEntity):
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    """Set up counter sensors for loggers that opted in."""
+    """Set up counter sensors for every managed logger."""
 
     entities: dict[tuple[str, str], LogCounterSensor] = {}
 
@@ -69,8 +69,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
         loggers = hass.data.get(DOMAIN, {}).get("loggers", {})
         desired = {
             (name, kind)
-            for name, info in loggers.items()
-            if info.get("sensor_enabled")
+            for name in loggers
             for kind in ("warning", "error")
         }
 

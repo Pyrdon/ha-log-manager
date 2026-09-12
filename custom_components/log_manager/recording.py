@@ -17,7 +17,7 @@ from homeassistant.core import HomeAssistant, SupportsResponse
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_call_later
 
-from .const import DOMAIN, LOG_LEVELS_LIST, match_managed_logger
+from .const import CAPTURE_LEVELS, DOMAIN, match_managed_logger
 from .profiles import get_profile
 
 _LOGGER = logging.getLogger(__name__)
@@ -69,15 +69,18 @@ class LogRecordingHandler(logging.Handler):
                 return
 
             # Check override first, then fall back to stored config.
+            # ALL applies no additional floor: capture everything the logger
+            # emits. NOTSET resolves to DEBUG, matching the stored default.
             raw_level = self.level_overrides.get(
                 matched,
                 self.hass.data[DOMAIN]["loggers"].get(matched, {}).get("level", "NOTSET"),
             )
-            min_level = (
-                getattr(logging, raw_level, logging.DEBUG)
-                if raw_level != "NOTSET"
-                else logging.DEBUG
-            )
+            if raw_level == "ALL":
+                min_level = 0
+            elif raw_level == "NOTSET":
+                min_level = logging.DEBUG
+            else:
+                min_level = getattr(logging, raw_level, logging.DEBUG)
             if record.levelno < min_level:
                 return
 
@@ -85,6 +88,7 @@ class LogRecordingHandler(logging.Handler):
                 "id": self._next_entry_id,
                 "timestamp": record.created,
                 "level": record.levelname,
+                "levelno": record.levelno,
                 "logger": record.name,
                 "message": record.getMessage(),
                 "source": (
@@ -153,8 +157,14 @@ def start_recording_session(
     max_duration: int = 300,
     level_overrides: dict[str, str] | None = None,
     excludes: dict[str, list[str]] | None = None,
+    raise_levels: dict[str, dict] | None = None,
 ) -> tuple[str | None, dict]:
     """Start a recording session.
+
+    ``raise_levels`` maps a logger name to the level it should be restored to
+    (``{"entity_id", "from", "to"}``). The session owns these intents so the
+    revert still happens when the requesting card is gone (reload, unload,
+    timeout).
 
     Returns (error_key, result); error_key is None on success.
     """
@@ -212,6 +222,7 @@ def start_recording_session(
                 logging.root.removeHandler(h)
             rec["duration"] = round(time.time() - rec.get("start_time", time.time()), 1)
             rec["cancel_timer"] = None
+            _restore_recording_levels(hass, rec)
             _fire_recording_completed(
                 hass,
                 rec.get("log_count", 0),
@@ -228,6 +239,7 @@ def start_recording_session(
         "cancel_timer": cancel_timer,
         "max_duration": max_duration,
         "loggers": sorted(logger_names),
+        "level_restore": dict(raise_levels or {}),
     }
 
     _LOGGER.info(
@@ -271,6 +283,8 @@ def stop_recording_session(hass: HomeAssistant) -> tuple[str | None, dict]:
     log_count = len(logs)
     logger_counts = handler.counts_snapshot() if handler else {}
 
+    _restore_recording_levels(hass, recording)
+
     # Retain the snapshot so the frontend can view it until explicitly
     # discarded via log_manager/discard_recording.
     hass.data[DOMAIN]["recording"] = {
@@ -302,6 +316,39 @@ def stop_recording_session(hass: HomeAssistant) -> tuple[str | None, dict]:
     }
 
 
+def _restore_recording_levels(hass: HomeAssistant, recording: dict) -> None:
+    """Revert logger levels raised to make a recording more verbose.
+
+    The session owns the intents, so this still runs when the requesting card
+    is gone. Safe to call repeatedly: the stored intents are cleared on first
+    use.
+    """
+    restore = recording.pop("level_restore", None)
+    if not restore:
+        return
+    for logger_name, info in restore.items():
+        entity_id = info.get("entity_id")
+        level = info.get("from")
+        if not level:
+            continue
+        if entity_id and hass.states.get(entity_id) is not None:
+            # Prefer the select service so HA state, storage and the audit
+            # trail stay consistent.
+            hass.async_create_task(
+                hass.services.async_call(
+                    "select",
+                    "select_option",
+                    {"entity_id": entity_id, "option": level},
+                    blocking=False,
+                )
+            )
+        else:
+            # On unload the select entity is already gone; revert the Python
+            # logger directly so a raised level never outlives the session.
+            logging.getLogger(logger_name).setLevel(level)
+    _LOGGER.info("Restored %s raised logger level(s) after a recording.", len(restore))
+
+
 def _fire_recording_completed(
     hass: HomeAssistant, log_count: int, duration: float, loggers: list
 ) -> None:
@@ -322,9 +369,45 @@ def discard_recording_session(hass: HomeAssistant) -> dict:
         handler = recording.get("handler")
         if handler:
             logging.root.removeHandler(handler)
+        _restore_recording_levels(hass, recording)
         _LOGGER.info("Discarded recording session.")
     hass.data[DOMAIN]["recording"] = {"status": "none"}
     return {"status": "none"}
+
+
+def _is_descendant_path(logger_name: str, path: str) -> bool:
+    """Return True when path is a strict, non-empty dotted descendant."""
+    if not path or not path.startswith(logger_name + "."):
+        return False
+    return all(segment.strip() for segment in path.split("."))
+
+
+def _profile_excludes(
+    stored_excludes: dict | None,
+    loggers: list[str],
+) -> dict[str, list[str]]:
+    """Return a profile's stored exclusions, dropping invalid paths.
+
+    A profile run uses its own exclusions verbatim: the request's ``excludes``
+    are ignored when a profile is named, so the profile is the single source of
+    truth for that recording. Invalid stored paths are dropped with a warning
+    rather than failing the session.
+    """
+    resolved: dict[str, list[str]] = {}
+    for logger_name in loggers:
+        seen: list[str] = []
+        for path in list((stored_excludes or {}).get(logger_name, [])):
+            if not _is_descendant_path(logger_name, path):
+                _LOGGER.warning(
+                    "Dropping invalid stored exclusion '%s' for '%s'.",
+                    path, logger_name,
+                )
+                continue
+            if path not in seen:
+                seen.append(path)
+        if seen:
+            resolved[logger_name] = seen
+    return resolved
 
 
 def _resolve_start_args(
@@ -345,7 +428,9 @@ def _resolve_start_args(
         if stored is None:
             return None, max_duration, {}, {}, "profile_not_found"
         loggers = list(stored.get("loggers", []))
+        # Overrides stay request-wins; exclusions come from the profile only.
         level_overrides = {**stored.get("level_overrides", {}), **level_overrides}
+        excludes = _profile_excludes(stored.get("excludes", {}), loggers)
         if "max_duration" not in call_data or call_data["max_duration"] == 300:
             max_duration = stored.get("max_duration", max_duration)
         return loggers, max_duration, level_overrides, excludes, None
@@ -374,10 +459,21 @@ def async_register_recording_commands(hass: HomeAssistant) -> None:
         vol.Coerce(int), vol.Range(min=10, max=3600)
     ),
     vol.Optional("level_overrides", default={}): vol.Schema(
-        {cv.string: vol.In(LOG_LEVELS_LIST)}
+        {cv.string: vol.In(CAPTURE_LEVELS)}
     ),
     vol.Optional("excludes", default={}): vol.Schema(
         {cv.string: vol.All(cv.ensure_list, [cv.string])}
+    ),
+    vol.Optional("raise_levels", default={}): vol.Schema(
+        {
+            cv.string: vol.Schema(
+                {
+                    vol.Required("entity_id"): cv.string,
+                    vol.Required("from"): cv.string,
+                    vol.Required("to"): cv.string,
+                }
+            )
+        }
     ),
 })
 @websocket_api.async_response
@@ -399,6 +495,7 @@ async def ws_start_recording(hass: HomeAssistant, connection, msg: dict):
         max_duration=max_duration,
         level_overrides=level_overrides,
         excludes=excludes,
+        raise_levels=msg.get("raise_levels"),
     )
     if err:
         extra = result
@@ -490,6 +587,8 @@ async def ws_recording_status(hass: HomeAssistant, connection, msg: dict):
             handler = recording.get("handler")
             result["log_count"] = handler.count() if handler else 0
             result["logger_counts"] = handler.counts_snapshot() if handler else {}
+            # Expose pending level reverts so a reloaded card can display them.
+            result["level_restore"] = recording.get("level_restore", {})
         else:
             # Completed sessions retain their snapshot until discarded.
             result["log_count"] = recording.get("log_count", 0)
@@ -534,7 +633,7 @@ START_RECORDING_SERVICE_SCHEMA = vol.Schema({
         vol.Coerce(int), vol.Range(min=10, max=3600)
     ),
     vol.Optional("level_overrides", default={}): vol.Schema(
-        {cv.string: vol.In(LOG_LEVELS_LIST)}
+        {cv.string: vol.In(CAPTURE_LEVELS)}
     ),
     vol.Optional("excludes", default={}): vol.Schema(
         {cv.string: vol.All(cv.ensure_list, [cv.string])}
@@ -604,4 +703,5 @@ def async_stop_recording_session(hass: HomeAssistant) -> None:
         handler = recording.get("handler")
         if handler:
             logging.root.removeHandler(handler)
+    _restore_recording_levels(hass, recording)
     hass.data.get(DOMAIN, {}).pop("recording", None)

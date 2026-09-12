@@ -295,3 +295,106 @@ async def test_recording_timeout_fires_completed_event(
     assert events[0]["log_count"] == 0
 
     await _send(client, {"type": "log_manager/discard_recording"})
+
+
+def _select_entity_id(hass, logger_name):
+    """Return the entity id of the select entity for a managed logger."""
+    for state in hass.states.async_all():
+        if state.attributes.get("logger_name") == logger_name:
+            return state.entity_id
+    raise AssertionError(f"no select entity for {logger_name}")
+
+
+async def test_ws_start_with_raise_levels_exposes_and_restores_on_stop(
+    hass, hass_ws_client
+):
+    """The session owns raised levels and reverts them when it is stopped."""
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    eid = _select_entity_id(hass, "rec.logger")
+    raise_levels = {
+        "rec.logger": {"entity_id": eid, "from": "WARNING", "to": "DEBUG"}
+    }
+    assert hass.states.get(eid).state == "NOTSET"
+
+    res = await _start_recording(client, ["rec.logger"], raise_levels=raise_levels)
+    assert res["success"] is True
+
+    # A reloaded card can read the pending reverts from the status.
+    res = await _send(client, {"type": "log_manager/recording_status"})
+    assert res["result"]["level_restore"] == raise_levels
+
+    res = await _send(client, {"type": "log_manager/stop_recording"})
+    assert res["success"] is True
+    await hass.async_block_till_done()
+
+    assert hass.states.get(eid).state == "WARNING"
+    assert "level_restore" not in hass.data[DOMAIN]["recording"]
+    logging.getLogger("rec.logger").setLevel("NOTSET")
+
+
+async def test_timeout_restores_raised_levels(hass, hass_ws_client, monkeypatch):
+    """A recording that ends on its timer still reverts the raised levels."""
+    await _setup(hass)
+
+    captured = {}
+
+    def fake_async_call_later(hass, delay, action):
+        captured["action"] = action
+        return lambda: None
+
+    monkeypatch.setattr(recording_module, "async_call_later", fake_async_call_later)
+
+    client = await hass_ws_client(hass)
+    eid = _select_entity_id(hass, "rec.logger")
+    raise_levels = {
+        "rec.logger": {"entity_id": eid, "from": "WARNING", "to": "DEBUG"}
+    }
+    res = await _start_recording(
+        client, ["rec.logger"], max_duration=10, raise_levels=raise_levels
+    )
+    assert res["success"] is True
+
+    captured["action"](dt_util.utcnow())
+    await hass.async_block_till_done()
+
+    assert hass.states.get(eid).state == "WARNING"
+    logging.getLogger("rec.logger").setLevel("NOTSET")
+    await _send(client, {"type": "log_manager/discard_recording"})
+
+
+async def test_discard_restores_raised_levels(hass, hass_ws_client):
+    """Discarding an active recording reverts the raised levels."""
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    eid = _select_entity_id(hass, "rec.logger")
+    raise_levels = {
+        "rec.logger": {"entity_id": eid, "from": "WARNING", "to": "DEBUG"}
+    }
+    await _start_recording(client, ["rec.logger"], raise_levels=raise_levels)
+
+    await _send(client, {"type": "log_manager/discard_recording"})
+    await hass.async_block_till_done()
+
+    assert hass.states.get(eid).state == "WARNING"
+    assert hass.data[DOMAIN]["recording"]["status"] == "none"
+    logging.getLogger("rec.logger").setLevel("NOTSET")
+
+
+async def test_unload_restores_raised_levels(hass, hass_ws_client):
+    """Unloading mid-recording reverts the Python logger even without entities."""
+    await _setup(hass)
+    client = await hass_ws_client(hass)
+    eid = _select_entity_id(hass, "rec.logger")
+    raise_levels = {
+        "rec.logger": {"entity_id": eid, "from": "WARNING", "to": "DEBUG"}
+    }
+    await _start_recording(client, ["rec.logger"], raise_levels=raise_levels)
+
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    # The select entity is unloaded, so the direct logging revert must stand in.
+    assert logging.getLogger("rec.logger").level == logging.WARNING
+    logging.getLogger("rec.logger").setLevel("NOTSET")

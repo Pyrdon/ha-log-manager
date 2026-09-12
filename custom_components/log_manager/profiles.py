@@ -13,7 +13,7 @@ from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_validation as cv
 
-from .const import DOMAIN, LOG_LEVELS_LIST
+from .const import CAPTURE_LEVELS, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,6 +30,7 @@ def get_all_profiles(hass: HomeAssistant) -> list[dict]:
             "name": name,
             "loggers": profile.get("loggers", []),
             "level_overrides": profile.get("level_overrides", {}),
+            "excludes": profile.get("excludes", {}),
             "max_duration": profile.get("max_duration", 300),
         }
         for name, profile in hass.data.get(DOMAIN, {}).get("profiles", {}).items()
@@ -42,11 +43,13 @@ async def async_save_profile(
     loggers: list[str],
     level_overrides: dict[str, str],
     max_duration: int = 300,
+    excludes: dict[str, list[str]] | None = None,
 ) -> None:
     """Persist a recording profile (upsert by name)."""
     hass.data[DOMAIN]["profiles"][name] = {
         "loggers": list(loggers),
         "level_overrides": dict(level_overrides),
+        "excludes": {k: list(v) for k, v in (excludes or {}).items()},
         "max_duration": max_duration,
     }
     save = hass.data[DOMAIN].get("save_data")
@@ -59,7 +62,10 @@ async def async_save_profile(
     vol.Required("name"): cv.string,
     vol.Required("loggers"): vol.All(cv.ensure_list, [cv.string]),
     vol.Optional("level_overrides", default={}): vol.Schema(
-        {cv.string: vol.In(LOG_LEVELS_LIST)}
+        {cv.string: vol.In(CAPTURE_LEVELS)}
+    ),
+    vol.Optional("excludes", default={}): vol.Schema(
+        {cv.string: vol.All(cv.ensure_list, [cv.string])}
     ),
     vol.Optional("max_duration", default=300): vol.All(
         vol.Coerce(int), vol.Range(min=10, max=3600)
@@ -93,8 +99,22 @@ async def ws_profile_save(hass: HomeAssistant, connection, msg: dict):
             )
             return
 
+    for logger_name in msg["excludes"]:
+        if logger_name not in loggers:
+            connection.send_error(
+                msg["id"],
+                "invalid_exclude",
+                f"Exclusion for '{logger_name}' is not in the profile loggers.",
+            )
+            return
+
     await async_save_profile(
-        hass, name, loggers, msg["level_overrides"], msg["max_duration"]
+        hass,
+        name,
+        loggers,
+        msg["level_overrides"],
+        msg["max_duration"],
+        msg["excludes"],
     )
     _LOGGER.info("Saved recording profile '%s' (%s loggers).", name, len(loggers))
     connection.send_result(msg["id"], {"profiles": get_all_profiles(hass)})

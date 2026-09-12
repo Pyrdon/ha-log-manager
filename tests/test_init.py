@@ -149,6 +149,55 @@ class TestLogCounterHandler:
         assert counters["warning"] == 0
         assert counters["recent_logs"] == []
 
+    def test_reset_does_not_deadlock_when_integration_logger_is_managed(self, hass):
+        import threading
+
+        managed = "custom_components.log_manager"
+        hass.data[DOMAIN] = {
+            "loggers": {
+                managed: {
+                    "friendly_name": "Log Manager",
+                    "level": "NOTSET",
+                },
+            },
+            "counters": {
+                managed: {
+                    "warning": 0,
+                    "error": 0,
+                    "last_warning": "",
+                    "last_error": "",
+                    "recent_logs": [],
+                    "levels": {},
+                    "alert_fired": False,
+                },
+            },
+        }
+        handler = LogCounterHandler(hass)
+        handler.setLevel(logging.DEBUG)
+
+        target = logging.getLogger(managed)
+        previous_level = target.level
+        previous_propagate = target.propagate
+        target.addHandler(handler)
+        target.setLevel(logging.INFO)
+        try:
+            done = threading.Event()
+
+            def run_reset():
+                handler.reset(managed)
+                done.set()
+
+            worker = threading.Thread(target=run_reset, daemon=True)
+            worker.start()
+            finished = done.wait(timeout=5)
+        finally:
+            target.removeHandler(handler)
+            target.setLevel(previous_level)
+            target.propagate = previous_propagate
+
+        assert finished, "reset() deadlocked while logging under the counter lock"
+        assert hass.data[DOMAIN]["counters"][managed]["warning"] == 0
+
     def test_emit_attributes_to_most_specific_parent(self, hass):
         hass.data[DOMAIN] = {
             "loggers": {

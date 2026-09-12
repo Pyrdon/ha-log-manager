@@ -19,12 +19,12 @@ from homeassistant.helpers.storage import Store
 from .const import (
     ALERT_DISABLED,
     DEFAULT_ALERT_LEVEL,
-    DEFAULT_COUNT_LEVEL,
     DOMAIN,
     LOG_LEVELS_LIST,
     STORAGE_KEY,
     STORAGE_VERSION,
     match_managed_logger,
+    record_audit,
 )
 from .core_sync import (
     _core_overrides,
@@ -61,40 +61,14 @@ def _empty_counters() -> dict:
 
 
 class LogCounterHandler(logging.Handler):
-    """Count events for managed loggers above each logger's configured level."""
+    """Count WARNING and above events for managed loggers."""
 
     MAX_RECENT = 10
 
     def __init__(self, hass: HomeAssistant) -> None:
         super().__init__(logging.WARNING)
         self.hass = hass
-        self._lock = threading.Lock()
-
-    def _count_level_for(self, logger_name: str) -> int:
-        info = self.hass.data.get(DOMAIN, {}).get("loggers", {}).get(logger_name, {})
-        raw = info.get("count_level", DEFAULT_COUNT_LEVEL)
-        if raw == "NOTSET":
-            # NOTSET as a counting threshold means "everything": resolve it to
-            # DEBUG, mirroring the recording capture convention.
-            return logging.DEBUG
-        level = getattr(logging, raw, None) if isinstance(raw, str) else None
-        if not isinstance(level, int):
-            return logging.WARNING
-        return level
-
-    def update_level(self) -> None:
-        """Set the handler level to the lowest configured count level.
-
-        Keeps the default at WARNING so the handler only pays for DEBUG/INFO
-        records once a logger explicitly asks for a lower counting level.
-        """
-        loggers = self.hass.data.get(DOMAIN, {}).get("loggers", {})
-        if not loggers:
-            self.level = logging.WARNING
-            return
-        self.level = min(
-            (self._count_level_for(name) for name in loggers), default=logging.WARNING
-        )
+        self._lock = threading.RLock()
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
@@ -110,7 +84,7 @@ class LogCounterHandler(logging.Handler):
             if matched_name is None:
                 return
 
-            if record.levelno < self._count_level_for(matched_name):
+            if record.levelno < logging.WARNING:
                 return
 
             msg = record.getMessage()
@@ -218,15 +192,23 @@ class LogCounterHandler(logging.Handler):
 
     def reset(self, logger_name: str | None = None) -> None:
         """Reset warning and error counters for one or all managed loggers."""
+        did_reset = False
         with self._lock:
             counters = self.hass.data[DOMAIN]["counters"]
             if logger_name:
                 if logger_name in counters:
                     counters[logger_name] = _empty_counters()
-                    _LOGGER.info("Reset counters for '%s'.", logger_name)
+                    did_reset = True
             else:
                 for name in counters:
                     counters[name] = _empty_counters()
+                did_reset = True
+        # Log only after releasing the lock: this logger may itself be managed,
+        # and a log call while holding the lock re-enters emit() and deadlocks.
+        if did_reset:
+            if logger_name:
+                _LOGGER.info("Reset counters for '%s'.", logger_name)
+            else:
                 _LOGGER.info("Reset counters for all loggers.")
         self._notify_update()
 
@@ -251,6 +233,23 @@ def _schedule_alert(
         pass
 
 
+def _alert_notification_id(logger_name: str) -> str:
+    """Return the stable persistent-notification id for a logger's alert.
+
+    Shared by creation and dismissal so both address the same notification.
+    """
+    safe_name = re.sub(r"[^a-z0-9_]", "_", logger_name.lower())
+    digest = hashlib.sha1(logger_name.encode("utf-8")).hexdigest()[:8]
+    return f"log_manager_alert_{safe_name}_{digest}"
+
+
+def _alert_display_name(hass: HomeAssistant, logger_name: str) -> str:
+    """Return the friendly name for a logger, falling back to its path."""
+    info = hass.data.get(DOMAIN, {}).get("loggers", {}).get(logger_name, {})
+    friendly = info.get("friendly_name")
+    return friendly if friendly else logger_name
+
+
 async def _create_alert_notification(
     hass: HomeAssistant,
     logger_name: str,
@@ -259,16 +258,15 @@ async def _create_alert_notification(
     threshold: int,
 ) -> None:
     """Create a persistent notification for a managed logger's alert threshold."""
-    safe_name = re.sub(r"[^a-z0-9_]", "_", logger_name.lower())
-    digest = hashlib.sha1(logger_name.encode("utf-8")).hexdigest()[:8]
     unit = "event" if count == 1 else "events"
+    title = f"Log Manager: {_alert_display_name(hass, logger_name)}"
     persistent_notification.async_create(
         hass,
         f"'{logger_name}' has logged {count} counted {unit} at "
         f"{alert_level} or above since the counters were last reset "
         f"(threshold {threshold}). [View logs](/config/logs)",
-        f"Log Manager: {logger_name}",
-        f"log_manager_alert_{safe_name}_{digest}",
+        title,
+        _alert_notification_id(logger_name),
     )
 
 
@@ -303,17 +301,29 @@ class LogManagerStore(Store):
             _LOGGER.info("Migrated %s loggers.", len(new_loggers))
 
         if old_major_version < 3:
-            # Schema v3: per-logger counting level, alert threshold, sensor
-            # opt-in and level-change audit trail.
+            # Schema v3: alert threshold and level-change audit trail.
             for info in old_data.get("loggers", {}).values():
                 if not isinstance(info, dict):
                     continue
-                info.setdefault("count_level", DEFAULT_COUNT_LEVEL)
                 info.setdefault("alert_threshold", ALERT_DISABLED)
                 info.setdefault("alert_level", DEFAULT_ALERT_LEVEL)
-                info.setdefault("sensor_enabled", False)
                 info.setdefault("audit", [])
             _LOGGER.info("Migrated %s loggers to schema v3.", len(old_data.get("loggers", {})))
+
+        # Whatever legacy shape is being upgraded, blank/whitespace logger keys
+        # are meaningless and the removed sensor-opt-in and count-level fields
+        # must not survive. Run last so no earlier block can reintroduce them.
+        loggers = old_data.get("loggers", {})
+        cleaned = {}
+        for name, info in loggers.items():
+            if not isinstance(name, str) or not name.strip():
+                _LOGGER.warning("Dropping blank logger key during migration.")
+                continue
+            if isinstance(info, dict):
+                info.pop("sensor_enabled", None)
+                info.pop("count_level", None)
+            cleaned[name] = info
+        old_data["loggers"] = cleaned
 
         return old_data
 
@@ -327,6 +337,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Register the websocket command as early as possible to avoid frontend errors.
     websocket_api.async_register_command(hass, ws_get_loggers)
     websocket_api.async_register_command(hass, ws_get_stats)
+    websocket_api.async_register_command(hass, ws_set_levels)
 
     # Initialize the custom storage object once and bind it to the domain data.
     store = LogManagerStore(hass, STORAGE_VERSION, STORAGE_KEY)
@@ -338,7 +349,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Apply log levels early.
     # We cannot check if loggers exist yet as other components might not be loaded.
+    # Also cleanse stores already at the current version, which do not re-run
+    # migrations: drop blank keys and any lingering legacy flags (sensor opt-in,
+    # the removed count level).
     for logger_name, info in stored_loggers.items():
+        if not isinstance(logger_name, str) or not logger_name.strip():
+            _LOGGER.warning("Dropping blank logger key on load.")
+            continue
+        if not isinstance(info, dict):
+            _LOGGER.warning("Dropping malformed record for '%s' on load.", logger_name)
+            continue
+        info.pop("sensor_enabled", None)
+        info.pop("count_level", None)
         cleaned_loggers[logger_name] = info
         level = info.get("level", "NOTSET")
         if level != "NOTSET":
@@ -408,7 +430,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Access current stored loggers to check for duplicates.
         stored_loggers = hass.data[DOMAIN]["loggers"]
 
-        # Validation.
+        # Validation. A blank or whitespace-only path is meaningless.
+        if not isinstance(logger_name, str) or not logger_name.strip():
+            _LOGGER.warning("Refusing to add a blank logger path.")
+            return
+
         if logger_name in stored_loggers:
             _LOGGER.warning("Logger path '%s' is already being managed.", logger_name)
             return
@@ -432,10 +458,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         stored_loggers[logger_name] = {
             "friendly_name": friendly_name,
             "level": initial_level,
-            "count_level": DEFAULT_COUNT_LEVEL,
             "alert_threshold": ALERT_DISABLED,
             "alert_level": DEFAULT_ALERT_LEVEL,
-            "sensor_enabled": False,
             "audit": [],
         }
         hass.data[DOMAIN]["loggers"] = stored_loggers
@@ -443,12 +467,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Initialize counters for the new logger.
         with counter_handler._lock:
             hass.data[DOMAIN]["counters"][logger_name] = _empty_counters()
-        counter_handler.update_level()
 
         await save_data()
 
-        # Dispatch signal to select.py to create the new entity.
+        # Dispatch signal to select.py to create the new entity, and to
+        # sensor.py so the new logger's automatic count sensors appear.
         async_dispatcher_send(hass, f"{DOMAIN}_add_logger", logger_name, friendly_name)
+        async_dispatcher_send(hass, f"{DOMAIN}_sensors_changed")
 
     async def remove_logger(call):
         """
@@ -467,7 +492,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             del hass.data[DOMAIN]["loggers"][logger_name]
             with counter_handler._lock:
                 hass.data[DOMAIN]["counters"].pop(logger_name, None)
-            counter_handler.update_level()
             await save_data()
             async_dispatcher_send(hass, f"{DOMAIN}_remove_logger", logger_name)
             async_dispatcher_send(hass, f"{DOMAIN}_sensors_changed")
@@ -494,11 +518,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def reset_counters(call):
         """
-        Reset warning and error counters for one or all managed loggers.
+        Reset warning and error counters for one or all managed loggers,
+        dismissing the matching alert notifications.
         """
 
         counter_handler = hass.data[DOMAIN]["counter_handler"]
-        counter_handler.reset(call.data.get("logger_name"))
+        logger_name = call.data.get("logger_name")
+        counter_handler.reset(logger_name)
+        # Reset re-arms the alert; drop any notification it already raised.
+        targets = (
+            [logger_name]
+            if logger_name
+            else list(hass.data[DOMAIN].get("loggers", {}).keys())
+        )
+        for name in targets:
+            if name:
+                persistent_notification.async_dismiss(hass, _alert_notification_id(name))
 
     hass.services.async_register(
         DOMAIN,
@@ -506,29 +541,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         reset_counters,
         schema=vol.Schema({
             vol.Optional("logger_name"): cv.string,
-        })
-    )
-
-    async def set_count_level(call):
-        """Set the counting threshold for a managed logger."""
-        logger_name = call.data["logger_name"]
-        level = call.data["level"]
-        info = hass.data[DOMAIN]["loggers"].get(logger_name)
-        if not info:
-            _LOGGER.warning("set_count_level: '%s' is not managed.", logger_name)
-            return
-        info["count_level"] = level
-        await save_data()
-        counter_handler.update_level()
-        _LOGGER.info("Set count level of '%s' to %s.", logger_name, level)
-
-    hass.services.async_register(
-        DOMAIN,
-        "set_count_level",
-        set_count_level,
-        schema=vol.Schema({
-            vol.Required("logger_name"): cv.string,
-            vol.Required("level"): vol.In(LOG_LEVELS_LIST),
         })
     )
 
@@ -548,6 +560,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if counter:
             counter["alert_fired"] = False
         await save_data()
+        # Refresh the select entity so the frontend sees the new alert settings.
+        async_dispatcher_send(hass, f"{DOMAIN}_options_changed")
         # Notify immediately if the new threshold is already satisfied.
         counter_handler.check_alert(logger_name)
         _LOGGER.info(
@@ -565,32 +579,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             vol.Optional("level"): vol.In(["WARNING", "ERROR", "CRITICAL"]),
         })
     )
-
-    async def set_sensor_enabled(call):
-        """Enable or disable counter sensor entities for a managed logger."""
-        logger_name = call.data["logger_name"]
-        enabled = call.data["enabled"]
-        info = hass.data[DOMAIN]["loggers"].get(logger_name)
-        if not info:
-            _LOGGER.warning("set_sensor_enabled: '%s' is not managed.", logger_name)
-            return
-        info["sensor_enabled"] = enabled
-        await save_data()
-        async_dispatcher_send(hass, f"{DOMAIN}_sensors_changed")
-        _LOGGER.info("%s sensors for '%s'.", "Enabled" if enabled else "Disabled", logger_name)
-
-    hass.services.async_register(
-        DOMAIN,
-        "set_sensor_enabled",
-        set_sensor_enabled,
-        schema=vol.Schema({
-            vol.Required("logger_name"): cv.string,
-            vol.Required("enabled"): cv.boolean,
-        })
-    )
-
-    # Size the counter handler to the lowest configured counting level.
-    counter_handler.update_level()
 
     # Mirror core logger overrides: adopt pins and refuse edits on those namespaces.
     hass.data[DOMAIN]["core_sync_unsub"] = register_core_sync(hass)
@@ -658,6 +646,60 @@ async def ws_get_stats(hass: HomeAssistant, connection, msg: dict):
     _LOGGER.debug("Returning stats for %s loggers.", len(counters))
 
     connection.send_result(msg["id"], counters)
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): f"{DOMAIN}/set_levels",
+    vol.Required("level"): vol.In(LOG_LEVELS_LIST),
+})
+@websocket_api.async_response
+async def ws_set_levels(hass: HomeAssistant, connection, msg: dict):
+    """Set the level of every managed logger, skipping core-pinned namespaces.
+
+    Returns the changed and skipped counts plus the skipped logger names.
+    """
+    if DOMAIN not in hass.data:
+        connection.send_error(msg["id"], "not_loaded", "Log Manager is not loaded.")
+        return
+
+    level = msg["level"]
+    loggers = hass.data[DOMAIN].get("loggers", {})
+    changed = 0
+    already = 0
+    skipped: list[str] = []
+
+    for logger_name, info in loggers.items():
+        if is_core_pinned(hass, logger_name):
+            skipped.append(logger_name)
+            continue
+        if info.get("level") == level:
+            # Already at the requested level: nothing to persist or announce.
+            already += 1
+            continue
+        old_level = info.get("level", "NOTSET")
+        logging.getLogger(logger_name).setLevel(level)
+        record_audit(info, old_level, level, "ui")
+        info["level"] = level
+        changed += 1
+
+    save = hass.data[DOMAIN].get("save_data")
+    if save and changed:
+        await save()
+    async_dispatcher_send(hass, f"{DOMAIN}_levels_changed")
+    _LOGGER.info(
+        "Set level %s: %s changed, %s already at level, %s skipped.",
+        level, changed, already, len(skipped),
+    )
+    connection.send_result(
+        msg["id"],
+        {
+            "changed": changed,
+            "already": already,
+            "skipped": len(skipped),
+            "skipped_loggers": skipped,
+        },
+    )
+
 
 async def async_register_lovelace_resource(hass: HomeAssistant) -> None:
     """

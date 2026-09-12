@@ -2,12 +2,14 @@
 
 import logging
 from homeassistant.components.select import SelectEntity
-from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.helpers.dispatcher import (
+    async_dispatcher_connect,
+    async_dispatcher_send,
+)
 
 from .const import (
     ALERT_DISABLED,
     DEFAULT_ALERT_LEVEL,
-    DEFAULT_COUNT_LEVEL,
     DOMAIN,
     LOG_LEVELS_LIST as LOG_LEVELS,
     effective_level_source,
@@ -104,12 +106,13 @@ class LogLevelSelect(SelectEntity):
             )
         )
 
-        # Push the new sensor_enabled attr after the toggle service runs.
+        # Push alert attrs after those services run so the card never reads
+        # stale option values.
         self.async_on_remove(
             async_dispatcher_connect(
                 self.hass,
-                f"{DOMAIN}_sensors_changed",
-                self._handle_sensors_changed
+                f"{DOMAIN}_options_changed",
+                self._handle_options_changed
             )
         )
 
@@ -127,15 +130,19 @@ class LogLevelSelect(SelectEntity):
             await self.async_remove(force_remove = True)
 
     async def _handle_levels_changed(self):
-        """Adopt the stored level (possibly pinned by core) and refresh state."""
+        """Adopt the stored level and recompute derived attributes.
+
+        Always writes state: a parent logger's level change alters this
+        entity's effective_level even when its own level is unchanged.
+        """
         stored_info = self._stored_info()
         level = stored_info.get("level", "NOTSET")
         if level != self._attr_current_option:
             self._attr_current_option = level
-            self.async_write_ha_state()
+        self.async_write_ha_state()
 
-    async def _handle_sensors_changed(self):
-        """Refresh state so the latest sensor_enabled attr reaches the frontend."""
+    async def _handle_options_changed(self):
+        """Refresh state so alert attrs reach the frontend."""
         self.async_write_ha_state()
 
     @property
@@ -161,12 +168,10 @@ class LogLevelSelect(SelectEntity):
             "core_pinned": is_core_pinned(self.hass, self._logger_name),
             "effective_level": effective_level,
             "effective_source": effective_source,
-            "count_level": stored_info.get("count_level", DEFAULT_COUNT_LEVEL),
             "alert_threshold": stored_info.get(
                 "alert_threshold", ALERT_DISABLED
             ),
             "alert_level": stored_info.get("alert_level", DEFAULT_ALERT_LEVEL),
-            "sensor_enabled": stored_info.get("sensor_enabled", False),
             "audit": stored_info.get("audit", []),
         }
 
@@ -209,3 +214,6 @@ class LogLevelSelect(SelectEntity):
 
         if "save_data" in self.hass.data[DOMAIN]:
             await self.hass.data[DOMAIN]["save_data"]()
+
+        # Refresh every entity so descendants recompute their effective_level.
+        async_dispatcher_send(self.hass, f"{DOMAIN}_levels_changed")

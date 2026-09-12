@@ -7,8 +7,11 @@ STORAGE_KEY = f"{DOMAIN}.config"
 STORAGE_VERSION = 3
 LOG_LEVELS_LIST = ["NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
+# Capture and filter selectors use the ALL catch-all plus the named levels.
+# NOTSET is logger-level only and never appears in a capture/filter selector.
+CAPTURE_LEVELS = ["ALL", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+
 # Per-logger options (storage schema v3).
-DEFAULT_COUNT_LEVEL = "WARNING"
 ALERT_DISABLED = 0
 DEFAULT_ALERT_LEVEL = "ERROR"
 MAX_AUDIT = 5

@@ -41,31 +41,6 @@ reset_counters:
       selector:
         text:
 
-set_count_level:
-  name: Set Count Level
-  description: Set the counting threshold for a managed logger.
-  fields:
-    logger_name:
-      name: Logger Name
-      description: The Python logger namespace to configure.
-      example: homeassistant.components.light
-      required: true
-      selector:
-        text:
-    level:
-      name: Level
-      description: Only events at or above this level are counted and retained.
-      required: true
-      selector:
-        select:
-          options:
-            - NOTSET
-            - DEBUG
-            - INFO
-            - WARNING
-            - ERROR
-            - CRITICAL
-
 set_alert_threshold:
   name: Set Alert Threshold
   description: Notify when a managed logger logs at least this many counted events at or above the alert severity.
@@ -97,24 +72,6 @@ set_alert_threshold:
             - ERROR
             - CRITICAL
 
-set_sensor_enabled:
-  name: Set Sensor Enabled
-  description: Enable or disable the warning/error counter sensors for a managed logger.
-  fields:
-    logger_name:
-      name: Logger Name
-      description: The Python logger namespace to configure.
-      example: homeassistant.components.light
-      required: true
-      selector:
-        text:
-    enabled:
-      name: Enabled
-      description: Whether the counter sensors are created for this logger.
-      required: true
-      selector:
-        boolean:
-
 start_recording:
   name: Start Recording
   description: Start capturing log events from the selected managed loggers.
@@ -129,7 +86,10 @@ start_recording:
         object:
     profile:
       name: Profile
-      description: A saved recording profile to run. Takes precedence over loggers.
+      description: >-
+        A saved recording profile to run. Takes precedence over loggers. When a
+        profile is named, its stored exclusions are used as-is and any excludes
+        supplied in this call are ignored; level overrides from this call still apply.
       required: false
       selector:
         text:

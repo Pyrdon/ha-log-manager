@@ -21,23 +21,11 @@ async def test_entity_initialization(hass):
     assert attrs["logger_name"] == "my.module"
     assert attrs["core_pinned"] is False
     assert "effective_level" in attrs
-    assert attrs["count_level"] == "WARNING"
+    assert "count_level" not in attrs
     assert attrs["alert_threshold"] == 0
     assert attrs["alert_level"] == "ERROR"
-    assert attrs["sensor_enabled"] is False
+    assert "sensor_enabled" not in attrs
     assert attrs["audit"] == []
-
-
-async def test_sensors_changed_refreshes_state(hass):
-    hass.data[DOMAIN] = {
-        "loggers": {"my.module": {"friendly_name": "My Module", "level": "WARNING"}},
-    }
-
-    entity = LogLevelSelect(hass, "my.module", "My Module")
-
-    with patch.object(entity, "async_write_ha_state") as mock_write:
-        await entity._handle_sensors_changed()
-        mock_write.assert_called_once()
 
 
 async def test_entity_init_defaults_to_notset_when_no_stored_level(hass):
@@ -116,6 +104,34 @@ async def test_select_option_no_save_data_key(hass):
 
     assert entity.current_option == "INFO"
     assert hass.data[DOMAIN]["loggers"]["no_save"]["level"] == "INFO"
+
+
+async def test_select_option_dispatches_levels_changed(hass):
+    hass.data[DOMAIN] = {
+        "loggers": {"parent": {"friendly_name": "Parent", "level": "NOTSET"}},
+        "save_data": AsyncMock(),
+    }
+    entity = LogLevelSelect(hass, "parent", "Parent")
+
+    with patch.object(entity, "async_write_ha_state"), patch(
+        "custom_components.log_manager.select.async_dispatcher_send"
+    ) as mock_send:
+        await entity.async_select_option("DEBUG")
+
+    mock_send.assert_called_once_with(hass, f"{DOMAIN}_levels_changed")
+
+
+async def test_handle_levels_changed_rewrites_state_when_own_level_unchanged(hass):
+    hass.data[DOMAIN] = {
+        "loggers": {"child": {"friendly_name": "Child", "level": "NOTSET"}},
+    }
+    entity = LogLevelSelect(hass, "child", "Child")
+
+    with patch.object(entity, "async_write_ha_state") as mock_write:
+        await entity._handle_levels_changed()
+
+    mock_write.assert_called_once()
+    assert entity.current_option == "NOTSET"
 
 
 async def test_handle_remove_signal_matching(hass):
