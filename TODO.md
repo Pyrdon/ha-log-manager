@@ -4,14 +4,10 @@
 
 - **Configurable buffer size** — Allow card YAML config option `max_entries` to control how many recent log entries are stored per logger (default 10).
 
-- **Logger grouping by prefix** — Group managed loggers by namespace prefix (e.g., `homeassistant.core.*`, `custom_components.hacs.*`) with collapsible sections. Reduces visual clutter when many loggers are active.
-
 - **Quick-set with auto-revert** — One-click button to set a logger to DEBUG for a configurable duration (default 5 minutes), then auto-revert to its previous level. Common debugging pattern that currently requires manual cleanup.
 
-- **Bulk actions** — "Set all to WARNING", "Reset all to NOTSET", and "Remove all" buttons for managing multiple loggers at once.
+- **Bulk reset and remove** — "Reset all counters" and "Remove all loggers" actions for managing multiple loggers at once. (Bulk level setting is delivered by the card's "Set all" control.)
 
-- **Recording services** — Expose `start_recording` / `stop_recording` as scriptable HA services so automations can capture log bursts on trigger (currently frontend/websocket-only).
+- **Split the card JS into modules** — `log_manager_card.js` is over the 1000-line hard gate (card markup/CSS, logger list, selection, recording session, live view, formatters). Extract cohesive concerns into sibling ES modules under `www/log_manager/`; the static path already serves the directory. Behaviour-neutral; needs its own review.
 
-- **Counter sensors** — Expose per-logger warning/error counts as HA sensor entities so users can alert and history-track them outside the card.
-
-- **Error-threshold alerts** — Optionally fire an HA notification when a managed logger's error count crosses a configurable threshold.
+- **Remove dead preview copy handler** — The preview's `user-select: none` styling makes `_handlePreviewCopy` and its `copy` listener unreachable in real use; only the direct unit test invokes them. Remove both and that test.

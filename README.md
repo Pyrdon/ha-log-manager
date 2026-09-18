@@ -5,17 +5,17 @@ A dynamic control panel for managing Python loggers in Home Assistant. This cust
 ## Features
 * **Dynamic Log Levels:** Change logger levels (DEBUG, INFO, WARNING, ERROR, CRITICAL) instantly from the frontend.
 * **Warning/Error Counters:** Counts WARNING and above per managed logger, shown as badges on each logger row with an expandable panel of the most recent matching log entries. Reset counters per logger or for all loggers.
-* **Per-logger counting levels:** Each logger counts events at or above its own configurable level (default WARNING). Lower it to INFO during an audit and the badges and expanded panel start reflecting INFO traffic; the panel also shows a per-severity breakdown of everything counted. Thresholds apply to new events only — reset the counters for a clean slate after changing one.
+* **Fixed counting severity:** Counting is always WARNING and above — there is no configurable counting level. The expanded panel lists the WARNING-and-above entries behind the badges; the former INFO-audit workflow (lower the counting level to capture INFO traffic) is gone. This removes the `log_manager.set_count_level` service as a breaking change.
 * **Severity alerts:** Each logger can notify once when it logs a configurable number of counted events at or above a chosen severity (WARNING, ERROR or CRITICAL). The notification names the logger and links to the HA Logs page; resetting the counters re-arms it. Set the severity you consider critical per logger — narrow loggers can alert on warnings, broad ones stay on errors.
-* **Level-change audit trail:** Each logger records level changes with their origin — card or service selection — shown as a compact history line in the expanded panel.
+* **Level-change audit trail:** Each logger records level changes with their origin — card or service selection — shown in a Level-change history dialog opened from the expanded panel.
 * **Core logger sync:** Levels pinned by Home Assistant itself (YAML `logger:` block, an integration's debug toggle, or the `logger.set_level` service) are adopted automatically and shown as read-only "Pinned" rows — the card never displays a level it cannot actually apply.
 * **Effective-level display:** Loggers left at `NOTSET` show the level that actually applies, resolved through inheritance — e.g. `effective: DEBUG` with the defining ancestor in the tooltip — so there is never doubt about what is in force.
 * **Live Log Recording:** Record log output from selected loggers for up to an hour, preview it in real time, then stop to review. Noisy child loggers can be excluded per selected logger. Export the captured entries as a plain-text `.log` file, JSON Lines (`.jsonl`), or copy them to the clipboard. Recorded sessions stay available until you explicitly discard them.
-* **Counter sensors:** Each logger can expose its warning/error counts as sensor entities for history and automations. Opt-in per row via the Sensors toggle in the expanded panel — off by default to avoid entity clutter.
+* **Counter sensors:** Every managed logger automatically exposes its warning/error counts as sensor entities for history and automations.
 * **Recording profiles:** Save a recording setup — logger selection, per-logger levels and duration — under a name and rerun it later from the card or from automations via `log_manager.start_recording` with a profile name.
 * **Logger grouping:** The card groups managed loggers by namespace prefix into collapsible sections (on by default; set `group_by_prefix: false` in the card config for a flat list).
 * **Live-view dedup:** Identical consecutive entries in the live view and results fold into one expandable row with a count and time range (on by default; set `live_dedup: false` in the card config for the raw stream).
-* **Results summary:** Ended sessions show severity totals, top loggers, and top repeated messages above the entry list — click a row to filter the list to it.
+* **Results summary:** Ended sessions show severity totals, top loggers, and top repeated messages in a read-only summary below the entry list.
 * **Smart UI Card:** Includes a custom Lovelace card with fuzzy searching.
 * **Persistent Configuration:** Active loggers and their levels are saved to Home Assistant storage and restored automatically on reboot.
 
@@ -24,9 +24,7 @@ The integration exposes the following services (callable from automations and th
 * `log_manager.add_logger` — Control a new logger, optionally with a friendly name.
 * `log_manager.remove_logger` — Stop controlling a managed logger.
 * `log_manager.reset_counters` — Reset warning/error counters, for a single logger or all loggers.
-* `log_manager.set_count_level` — Set the counting threshold for a managed logger.
 * `log_manager.set_alert_threshold` — Notify after a managed logger logs a configurable number of events at or above a chosen severity.
-* `log_manager.set_sensor_enabled` — Enable or disable the warning/error counter sensors for a managed logger.
 * `log_manager.start_recording` — Start capturing log events, with an explicit logger list or a saved profile name.
 * `log_manager.stop_recording` — Stop the active recording session, retaining its captured events. Returns the captured logs when called with a response, and always fires a `log_manager_recording_completed` event with the session summary.
 * `log_manager.discard_recording` — Discard the active or completed recording session.
