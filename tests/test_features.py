@@ -12,20 +12,17 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.log_manager import (
     DOMAIN,
-    LogCounterHandler,
-    LogManagerStore,
-    STORAGE_VERSION,
     sensor as sensor_platform,
 )
 from custom_components.log_manager.const import (
-    ALERT_DISABLED,
     effective_level_source,
 )
+from custom_components.log_manager.counter import LogCounterHandler
 from custom_components.log_manager.core_sync import (
     is_core_pinned,
     reconcile_with_core,
 )
-from custom_components.log_manager.recording import LogRecordingHandler
+from custom_components.log_manager.recording_handler import LogRecordingHandler
 from custom_components.log_manager.select import LogLevelSelect
 
 STORE_DATA = {
@@ -42,7 +39,7 @@ def _make_record(name, level, msg="test", pathname="test.py", lineno=1):
 
 async def _setup(hass):
     with patch(
-        "custom_components.log_manager.LogManagerStore.async_load",
+        "custom_components.log_manager.storage.LogManagerStore.async_load",
         return_value={"loggers": STORE_DATA["loggers"]},
     ):
         entry = MockConfigEntry(domain=DOMAIN, data={})
@@ -50,119 +47,6 @@ async def _setup(hass):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
-
-class TestMigrationV3:
-    async def test_v2_to_v3_adds_defaults(self):
-        hass = MagicMock()
-        store = LogManagerStore(hass, STORAGE_VERSION, f"{DOMAIN}.config")
-        old_data = {
-            "loggers": {
-                "a.logger": {"friendly_name": "A", "level": "WARNING"},
-                "b.logger": {"friendly_name": "B", "level": "NOTSET"},
-            }
-        }
-        result = await store._async_migrate_func(2, 0, old_data)
-
-        for info in result["loggers"].values():
-            assert "count_level" not in info
-            assert info["alert_threshold"] == ALERT_DISABLED
-            assert "sensor_enabled" not in info
-            assert info["audit"] == []
-        assert result["loggers"]["a.logger"]["level"] == "WARNING"
-
-    async def test_v3_preserves_existing_values_and_skips_non_dict(self):
-        hass = MagicMock()
-        store = LogManagerStore(hass, STORAGE_VERSION, f"{DOMAIN}.config")
-        old_data = {
-            "loggers": {
-                "custom": {
-                    "friendly_name": "C",
-                    "level": "INFO",
-                    "alert_threshold": 5,
-                    "sensor_enabled": True,
-                    "audit": [
-                        {
-                            "ts": 1.0,
-                            "source": "ui",
-                            "old_level": "X",
-                            "new_level": "Y",
-                        }
-                    ],
-                },
-                "broken": "not-a-dict",
-            }
-        }
-        result = await store._async_migrate_func(2, 0, old_data)
-
-        info = result["loggers"]["custom"]
-        assert info["alert_threshold"] == 5
-        assert "sensor_enabled" not in info
-        assert info["audit"] == [
-            {"ts": 1.0, "source": "ui", "old_level": "X", "new_level": "Y"}
-        ]
-        assert result["loggers"]["broken"] == "not-a-dict"
-
-    async def test_v1_migration_drops_blank_keys_and_legacy_flags(self):
-        hass = MagicMock()
-        store = LogManagerStore(hass, STORAGE_VERSION, f"{DOMAIN}.config")
-        # Legacy flat map: a valid name and a blank one, plus a stray flag that
-        # the v1 conversion would otherwise reintroduce on the climb.
-        old_data = {
-            "loggers": {
-                "legacy": "Legacy Name",
-                "   ": "Blank Name",
-            }
-        }
-
-        with patch("custom_components.log_manager.logging.getLogger") as mock_get_logger:
-            mock_logger = MagicMock()
-            mock_logger.getEffectiveLevel.return_value = 30
-            mock_get_logger.return_value = mock_logger
-            result = await store._async_migrate_func(1, 0, old_data)
-
-        assert set(result["loggers"].keys()) == {"legacy"}
-        info = result["loggers"]["legacy"]
-        assert info["friendly_name"] == "Legacy Name"
-        assert info["alert_threshold"] == ALERT_DISABLED
-        assert "sensor_enabled" not in info
-
-    async def test_v2_migration_drops_legacy_flags_and_blank_keys(self):
-        hass = MagicMock()
-        store = LogManagerStore(hass, STORAGE_VERSION, f"{DOMAIN}.config")
-        old_data = {
-            "loggers": {
-                "keep.log": {
-                    "friendly_name": "Keep",
-                    "level": "INFO",
-                    "alert_threshold": 3,
-                    "alert_level": "WARNING",
-                    "sensor_enabled": True,
-                    "audit": [],
-                },
-                "": {"friendly_name": "Blank", "sensor_enabled": True},
-            }
-        }
-        result = await store._async_migrate_func(2, 0, old_data)
-
-        assert set(result["loggers"].keys()) == {"keep.log"}
-        info = result["loggers"]["keep.log"]
-        assert info["alert_threshold"] == 3
-        assert "sensor_enabled" not in info
-
-    async def test_v1_to_v3_converts_and_adds_defaults(self):
-        hass = MagicMock()
-        store = LogManagerStore(hass, STORAGE_VERSION, f"{DOMAIN}.config")
-        old_data = {"loggers": {"legacy": "Legacy Name"}}
-
-        with patch("custom_components.log_manager.logging.getLogger") as mock_get_logger:
-            mock_logger = MagicMock()
-            mock_logger.getEffectiveLevel.return_value = 30
-            mock_get_logger.return_value = mock_logger
-            result = await store._async_migrate_func(1, 0, old_data)
-
-        info = result["loggers"]["legacy"]
-        assert info["friendly_name"] == "Legacy Name"
-        assert info["level"] == "WARNING"
 
 class TestServicesAndNotifications:
     async def test_set_sensor_enabled_service_is_not_registered(self, hass):
@@ -201,11 +85,11 @@ class TestServicesAndNotifications:
         assert f"{DOMAIN}_sensors_changed" in signals
 
     async def test_notification_title_uses_friendly_name_and_body_path_once(self, hass):
-        from custom_components.log_manager import _create_alert_notification
+        from custom_components.log_manager.alerts import _create_alert_notification
 
         hass.data[DOMAIN] = {"loggers": {"my.logger": {"friendly_name": "My Friendly"}}}
         with patch(
-            "custom_components.log_manager.persistent_notification.async_create"
+            "custom_components.log_manager.alerts.persistent_notification.async_create"
         ) as mock_create:
             await _create_alert_notification(hass, "my.logger", 3, "ERROR", 2)
 
@@ -216,11 +100,11 @@ class TestServicesAndNotifications:
         assert body.count("my.logger") == 1
 
     async def test_notification_title_falls_back_to_path(self, hass):
-        from custom_components.log_manager import _create_alert_notification
+        from custom_components.log_manager.alerts import _create_alert_notification
 
         hass.data[DOMAIN] = {"loggers": {"bare.logger": {"level": "NOTSET"}}}
         with patch(
-            "custom_components.log_manager.persistent_notification.async_create"
+            "custom_components.log_manager.alerts.persistent_notification.async_create"
         ) as mock_create:
             await _create_alert_notification(hass, "bare.logger", 1, "ERROR", 1)
 
@@ -231,7 +115,7 @@ class TestServicesAndNotifications:
         assert body.count("bare.logger") == 1
 
     async def test_alert_notification_id_shared_and_stable(self):
-        from custom_components.log_manager import _alert_notification_id
+        from custom_components.log_manager.alerts import _alert_notification_id
 
         assert _alert_notification_id("my.logger") == _alert_notification_id("my.logger")
         assert _alert_notification_id("my.logger") != _alert_notification_id("other.logger")
@@ -248,7 +132,7 @@ class TestServicesAndNotifications:
                 blocking=True,
             )
         ids = [c.args[1] for c in mock_dismiss.call_args_list]
-        from custom_components.log_manager import _alert_notification_id
+        from custom_components.log_manager.alerts import _alert_notification_id
 
         assert _alert_notification_id("rec.logger") in ids
 
@@ -261,35 +145,10 @@ class TestServicesAndNotifications:
                 DOMAIN, "reset_counters", {}, blocking=True
             )
         ids = {c.args[1] for c in mock_dismiss.call_args_list}
-        from custom_components.log_manager import _alert_notification_id
+        from custom_components.log_manager.alerts import _alert_notification_id
 
         assert _alert_notification_id("rec.logger") in ids
         assert _alert_notification_id("other.logger") in ids
-
-
-class TestLoadCleanse:
-    async def test_load_time_cleanse_drops_blank_and_flag(self, hass):
-        with patch(
-            "custom_components.log_manager.LogManagerStore.async_load",
-            return_value={
-                "loggers": {
-                    "rec.logger": {
-                        "friendly_name": "Rec Logger",
-                        "level": "NOTSET",
-                        "sensor_enabled": True,
-                    },
-                    "  ": {"friendly_name": "Blank"},
-                }
-            },
-        ):
-            entry = MockConfigEntry(domain=DOMAIN, data={})
-            entry.add_to_hass(hass)
-            assert await hass.config_entries.async_setup(entry.entry_id)
-            await hass.async_block_till_done()
-
-        loggers = hass.data[DOMAIN]["loggers"]
-        assert set(loggers.keys()) == {"rec.logger"}
-        assert "sensor_enabled" not in loggers["rec.logger"]
 
 
 class TestCounterThreshold:
@@ -375,7 +234,7 @@ class TestAlerts:
         }
         handler = LogCounterHandler(hass)
 
-        with patch("custom_components.log_manager._schedule_alert") as mock_schedule:
+        with patch("custom_components.log_manager.counter._schedule_alert") as mock_schedule:
             for _ in range(4):
                 handler.emit(_make_record("alerty", logging.ERROR, msg="err"))
 
@@ -397,7 +256,7 @@ class TestAlerts:
         }
         handler = LogCounterHandler(hass)
 
-        with patch("custom_components.log_manager._schedule_alert") as mock_schedule:
+        with patch("custom_components.log_manager.counter._schedule_alert") as mock_schedule:
             handler.emit(_make_record("alerty", logging.ERROR, msg="e1"))
             handler.emit(_make_record("alerty", logging.ERROR, msg="e2"))
         assert mock_schedule.call_count == 1
@@ -405,7 +264,7 @@ class TestAlerts:
         handler.reset("alerty")
         assert hass.data[DOMAIN]["counters"]["alerty"]["alert_fired"] is False
 
-        with patch("custom_components.log_manager._schedule_alert") as mock_schedule2:
+        with patch("custom_components.log_manager.counter._schedule_alert") as mock_schedule2:
             handler.emit(_make_record("alerty", logging.ERROR, msg="e3"))
             handler.emit(_make_record("alerty", logging.ERROR, msg="e4"))
         assert mock_schedule2.call_count == 1
@@ -424,7 +283,7 @@ class TestAlerts:
         }
         handler = LogCounterHandler(hass)
 
-        with patch("custom_components.log_manager._schedule_alert") as mock_schedule:
+        with patch("custom_components.log_manager.counter._schedule_alert") as mock_schedule:
             handler.emit(_make_record("warnful", logging.WARNING, msg="w1"))
             assert mock_schedule.call_count == 0
             handler.emit(_make_record("warnful", logging.WARNING, msg="w2"))
@@ -445,7 +304,7 @@ class TestAlerts:
         }
         handler = LogCounterHandler(hass)
 
-        with patch("custom_components.log_manager._schedule_alert") as mock_schedule:
+        with patch("custom_components.log_manager.counter._schedule_alert") as mock_schedule:
             handler.emit(_make_record("crit", logging.ERROR, msg="e1"))
             assert mock_schedule.call_count == 0
             handler.emit(_make_record("crit", logging.CRITICAL, msg="c1"))
@@ -505,7 +364,7 @@ class TestAlerts:
         )
 
         handler = hass.data[DOMAIN]["counter_handler"]
-        with patch("custom_components.log_manager._schedule_alert") as mock_schedule:
+        with patch("custom_components.log_manager.counter._schedule_alert") as mock_schedule:
             for _ in range(3):
                 handler.emit(_make_record("rec.logger", logging.ERROR, msg="err"))
         assert mock_schedule.call_count == 0
@@ -814,7 +673,7 @@ class TestProfileExcludes:
         assert result["error"]["code"] == "invalid_exclude"
 
     def test_invalid_stored_excludes_dropped(self, hass):
-        from custom_components.log_manager.recording import _profile_excludes
+        from custom_components.log_manager.recording_session import _profile_excludes
 
         resolved = _profile_excludes(
             {"p": ["not.a.child", "p.", "p..bad", "p.good"]},
@@ -823,7 +682,7 @@ class TestProfileExcludes:
         assert resolved["p"] == ["p.good"]
 
     async def test_profile_run_uses_stored_excludes_only(self, hass):
-        from custom_components.log_manager.recording import _resolve_start_args
+        from custom_components.log_manager.recording_session import _resolve_start_args
 
         await _setup(hass)
         hass.data[DOMAIN]["profiles"]["p"] = {

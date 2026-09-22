@@ -5,7 +5,7 @@ from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.log_manager import DOMAIN
-from custom_components.log_manager import recording as recording_module
+from custom_components.log_manager import recording_session as recording_module
 
 STORE_DATA = {
     "loggers": {
@@ -21,7 +21,7 @@ def _make_record(name, level, msg="test", pathname="test.py", lineno=1):
 
 async def _setup(hass):
     with patch(
-        "custom_components.log_manager.LogManagerStore.async_load",
+        "custom_components.log_manager.storage.LogManagerStore.async_load",
         return_value={"loggers": STORE_DATA["loggers"]},
     ):
         entry = MockConfigEntry(domain=DOMAIN, data={})

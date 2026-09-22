@@ -68,7 +68,7 @@ async def test_async_setup_entry_restores_stored_loggers_and_levels(hass):
     }
 
     with patch(
-        "custom_components.log_manager.LogManagerStore.async_load",
+        "custom_components.log_manager.storage.LogManagerStore.async_load",
     ) as mock_load:
         mock_load.return_value = store_data
         entry = MockConfigEntry(domain=DOMAIN, data={})
@@ -149,7 +149,7 @@ async def test_remove_logger_service(hass):
     }
 
     with patch(
-        "custom_components.log_manager.LogManagerStore.async_load",
+        "custom_components.log_manager.storage.LogManagerStore.async_load",
     ) as mock_load:
         mock_load.return_value = store_data
         entry = MockConfigEntry(domain=DOMAIN, data={})
@@ -176,7 +176,7 @@ async def test_add_logger_duplicate_is_rejected(hass, caplog):
     caplog.set_level(logging.WARNING)
 
     with patch(
-        "custom_components.log_manager.LogManagerStore.async_load",
+        "custom_components.log_manager.storage.LogManagerStore.async_load",
     ) as mock_load:
         mock_load.return_value = store_data
         entry = MockConfigEntry(domain=DOMAIN, data={})
@@ -203,7 +203,7 @@ async def test_reset_counters_for_specific_logger(hass):
     }
 
     with patch(
-        "custom_components.log_manager.LogManagerStore.async_load",
+        "custom_components.log_manager.storage.LogManagerStore.async_load",
     ) as mock_load:
         mock_load.return_value = store_data
         entry = MockConfigEntry(domain=DOMAIN, data={})
@@ -235,7 +235,7 @@ async def test_reset_all_counters(hass):
     }
 
     with patch(
-        "custom_components.log_manager.LogManagerStore.async_load",
+        "custom_components.log_manager.storage.LogManagerStore.async_load",
     ) as mock_load:
         mock_load.return_value = store_data
         entry = MockConfigEntry(domain=DOMAIN, data={})
@@ -284,7 +284,7 @@ async def test_ws_get_stats_returns_counters(hass, hass_ws_client):
         }
     }
     with patch(
-        "custom_components.log_manager.LogManagerStore.async_load",
+        "custom_components.log_manager.storage.LogManagerStore.async_load",
     ) as mock_load:
         mock_load.return_value = store_data
         entry = MockConfigEntry(domain=DOMAIN, data={})
