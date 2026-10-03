@@ -157,6 +157,9 @@ async def test_remove_logger_service(hass):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
+    # The card had set the managed logger to DEBUG.
+    logging.getLogger("to.remove").setLevel("DEBUG")
+
     await hass.services.async_call(
         DOMAIN, "remove_logger",
         {"logger_name": "to.remove"},
@@ -165,6 +168,42 @@ async def test_remove_logger_service(hass):
 
     assert "to.remove" not in hass.data[DOMAIN]["loggers"]
     assert "to.remove" not in hass.data[DOMAIN]["counters"]
+    # Removing management resets the level so it inherits again.
+    assert logging.getLogger("to.remove").level == logging.NOTSET
+
+
+async def test_remove_logger_leaves_core_pinned_level(hass):
+    from types import SimpleNamespace
+
+    store_data = {
+        "loggers": {
+            "pinned.remove": {"friendly_name": "Pinned Remove", "level": "DEBUG"},
+        }
+    }
+
+    with patch(
+        "custom_components.log_manager.storage.LogManagerStore.async_load",
+    ) as mock_load:
+        mock_load.return_value = store_data
+        entry = MockConfigEntry(domain=DOMAIN, data={})
+        entry.add_to_hass(hass)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    # Core pins this exact namespace, so it owns the level.
+    hass.data["logger"] = SimpleNamespace(overrides={"pinned.remove": 10})
+    logging.getLogger("pinned.remove").setLevel("DEBUG")
+
+    await hass.services.async_call(
+        DOMAIN, "remove_logger",
+        {"logger_name": "pinned.remove"},
+        blocking=True,
+    )
+
+    assert "pinned.remove" not in hass.data[DOMAIN]["loggers"]
+    # A core-pinned namespace is left untouched by removal.
+    assert logging.getLogger("pinned.remove").level == logging.DEBUG
+    logging.getLogger("pinned.remove").setLevel(logging.NOTSET)
 
 
 async def test_add_logger_duplicate_is_rejected(hass, caplog):

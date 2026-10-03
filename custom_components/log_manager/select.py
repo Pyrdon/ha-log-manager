@@ -70,7 +70,7 @@ class LogLevelSelect(SelectEntity):
         self._attr_unique_id = f"log_manager_{safe_id}"
 
         _LOGGER.debug(
-            "Adding new logger configuration for '%s' (%s).",
+            "Added logger '%s' (%s).",
             friendly_name,
             logger_name
         )
@@ -123,7 +123,7 @@ class LogLevelSelect(SelectEntity):
 
         if logger_name == self._logger_name:
             _LOGGER.debug(
-                "Removing logger configuration for '%s' (%s).",
+                "Removed logger '%s' (%s).",
                 self._attr_name,
                 logger_name
             )
@@ -182,8 +182,8 @@ class LogLevelSelect(SelectEntity):
 
         if is_core_pinned(self.hass, self._logger_name):
             _LOGGER.warning(
-                "Level of '%s' is managed by Home Assistant core; ignoring request to set %s.",
-                self._logger_name, option
+                "Skipped '%s': its level is managed by Home Assistant core.",
+                self._logger_name
             )
             return
 
@@ -199,7 +199,7 @@ class LogLevelSelect(SelectEntity):
         self.async_write_ha_state()
 
         _LOGGER.info(
-            "Setting log level for '%s' (%s) to %s.",
+            "Set level of '%s' (%s) to %s.",
             self._attr_name,
             self._logger_name,
             option

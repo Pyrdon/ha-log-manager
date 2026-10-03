@@ -128,7 +128,7 @@ class LogCounterHandler(logging.Handler):
         if qualifying < threshold:
             return
         counter["alert_fired"] = True
-        _schedule_alert(self.hass, logger_name, qualifying, alert_level, threshold)
+        _schedule_alert(self.hass, logger_name, qualifying, alert_level)
 
     def check_alert(self, logger_name: str) -> None:
         """Evaluate the alert threshold once (e.g. after reconfiguration)."""

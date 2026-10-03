@@ -60,7 +60,7 @@ def reconcile_with_core(hass: HomeAssistant) -> None:
         if name in overrides and info.get("level") != overrides[name]:
             record_audit(info, info.get("level", "NOTSET"), overrides[name], "core")
             info["level"] = overrides[name]
-            _LOGGER.info("Adopting core-pinned level '%s' for '%s'.", overrides[name], name)
+            _LOGGER.info("Adopted pinned level '%s' for '%s'.", overrides[name], name)
             changed = True
 
     if not changed:

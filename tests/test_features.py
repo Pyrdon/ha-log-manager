@@ -91,7 +91,7 @@ class TestServicesAndNotifications:
         with patch(
             "custom_components.log_manager.alerts.persistent_notification.async_create"
         ) as mock_create:
-            await _create_alert_notification(hass, "my.logger", 3, "ERROR", 2)
+            await _create_alert_notification(hass, "my.logger", 3, "ERROR")
 
         args = mock_create.call_args[0]
         body = args[1]
@@ -106,7 +106,7 @@ class TestServicesAndNotifications:
         with patch(
             "custom_components.log_manager.alerts.persistent_notification.async_create"
         ) as mock_create:
-            await _create_alert_notification(hass, "bare.logger", 1, "ERROR", 1)
+            await _create_alert_notification(hass, "bare.logger", 1, "ERROR")
 
         args = mock_create.call_args[0]
         title = args[2]

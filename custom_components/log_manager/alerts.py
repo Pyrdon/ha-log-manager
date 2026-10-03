@@ -14,13 +14,12 @@ def _schedule_alert(
     logger_name: str,
     count: int,
     alert_level: str,
-    threshold: int,
 ) -> None:
     """Schedule a persistent notification for a threshold crossing."""
 
     def _create() -> None:
         hass.async_create_task(
-            _create_alert_notification(hass, logger_name, count, alert_level, threshold)
+            _create_alert_notification(hass, logger_name, count, alert_level)
         )
 
     try:
@@ -51,16 +50,15 @@ async def _create_alert_notification(
     logger_name: str,
     count: int,
     alert_level: str,
-    threshold: int,
 ) -> None:
     """Create a persistent notification for a managed logger's alert threshold."""
     unit = "event" if count == 1 else "events"
     title = f"Log Manager: {_alert_display_name(hass, logger_name)}"
     persistent_notification.async_create(
         hass,
-        f"'{logger_name}' has logged {count} counted {unit} at "
-        f"{alert_level} or above since the counters were last reset "
-        f"(threshold {threshold}). [View logs](/config/logs)",
+        f"{logger_name} logged {count} {unit} at "
+        f"{alert_level} or above since the counters were last reset. "
+        f"[View logs](/config/logs)",
         title,
         _alert_notification_id(logger_name),
     )

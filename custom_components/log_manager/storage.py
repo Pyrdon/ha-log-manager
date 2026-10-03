@@ -34,7 +34,7 @@ class LogManagerStore(Store):
                     "friendly_name": friendly_name,
                     "level": level_name
                 }
-                _LOGGER.debug("Migrated logger '%s'.", friendly_name)
+                _LOGGER.debug("Migrated logger '%s'.", name)
 
             old_data["loggers"] = new_loggers
             _LOGGER.info("Migrated %s loggers.", len(new_loggers))
@@ -56,7 +56,7 @@ class LogManagerStore(Store):
         cleaned = {}
         for name, info in loggers.items():
             if not isinstance(name, str) or not name.strip():
-                _LOGGER.warning("Dropping blank logger key during migration.")
+                _LOGGER.warning("Dropped blank logger key during migration.")
                 continue
             if isinstance(info, dict):
                 info.pop("sensor_enabled", None)

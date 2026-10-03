@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Set up Log Manager",
-        "description": "Do you want to initialize the Log Manager?"
+        "description": "Add the Log Manager integration to Home Assistant."
       }
     },
     "abort": {

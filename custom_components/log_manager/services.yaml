@@ -43,7 +43,7 @@ reset_counters:
 
 set_alert_threshold:
   name: Set Alert Threshold
-  description: Notify when a managed logger logs at least this many counted events at or above the alert severity.
+  description: Notify when a logger logs this many events at or above the chosen severity.
   fields:
     logger_name:
       name: Logger Name
@@ -54,7 +54,7 @@ set_alert_threshold:
         text:
     events:
       name: Event Threshold
-      description: Number of qualifying counted events that triggers the notification. 0 disables the alert.
+      description: Number of qualifying events that triggers the notification. 0 disables the alert.
       required: true
       selector:
         number:
@@ -87,9 +87,8 @@ start_recording:
     profile:
       name: Profile
       description: >-
-        A saved recording profile to run. Takes precedence over loggers. When a
-        profile is named, its stored exclusions are used as-is and any excludes
-        supplied in this call are ignored; level overrides from this call still apply.
+        A saved profile to run. Overrides loggers; its stored exclusions are
+        used as-is, but level overrides from this call still apply.
       required: false
       selector:
         text:
@@ -105,20 +104,23 @@ start_recording:
           mode: box
     level_overrides:
       name: Level Overrides
-      description: Per-logger capture levels that override the stored level.
+      description: Per-logger capture levels that override each logger's configured level.
       required: false
       selector:
         object:
     excludes:
       name: Excludes
-      description: Per-logger list of child paths to exclude (subtree matched).
+      description: Child paths to exclude, keyed by logger; descendants are included.
       required: false
       selector:
         object:
 
 stop_recording:
   name: Stop Recording
-  description: Stop the active recording session and retain its captured events until discarded. Returns the captured logs, count, duration and loggers when called with a response; also fires a log_manager_recording_completed event with the session summary.
+  description: >-
+    Stop the active recording session and keep its captured events until they
+    are discarded. Fires a log_manager_recording_completed event and returns
+    the session summary when called with a response.
 
 discard_recording:
   name: Discard Recording

@@ -64,10 +64,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # the removed count level).
     for logger_name, info in stored_loggers.items():
         if not isinstance(logger_name, str) or not logger_name.strip():
-            _LOGGER.warning("Dropping blank logger key on load.")
+            _LOGGER.warning("Dropped blank logger key on load.")
             continue
         if not isinstance(info, dict):
-            _LOGGER.warning("Dropping malformed record for '%s' on load.", logger_name)
+            _LOGGER.warning("Dropped malformed record for '%s' on load.", logger_name)
             continue
         info.pop("sensor_enabled", None)
         info.pop("count_level", None)
@@ -122,18 +122,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         logger_name = call.data.get("logger_name")
         friendly_name = call.data.get("friendly_name")
-        _LOGGER.info(
-            "Request to add logger configuration for '%s' (%s).",
-            friendly_name,
-            logger_name
-        )
 
         # Access current stored loggers to check for duplicates.
         stored_loggers = hass.data[DOMAIN]["loggers"]
 
         # Validation. A blank or whitespace-only path is meaningless.
         if not isinstance(logger_name, str) or not logger_name.strip():
-            _LOGGER.warning("Refusing to add a blank logger path.")
+            _LOGGER.warning("Ignoring blank logger path.")
             return
 
         if logger_name in stored_loggers:
@@ -153,7 +148,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if is_core_pinned(hass, logger_name):
             initial_level = _core_overrides(hass)[logger_name]
             _LOGGER.info(
-                "New logger '%s' starts at core-pinned level %s.",
+                "New logger '%s' starts at pinned level %s.",
                 logger_name, initial_level,
             )
         stored_loggers[logger_name] = {
@@ -171,6 +166,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         await save_data()
 
+        _LOGGER.info(
+            "Added logger '%s' (%s).",
+            friendly_name,
+            logger_name,
+        )
+
         # Dispatch signal to select.py to create the new entity, and to
         # sensor.py so the new logger's automatic count sensors appear.
         async_dispatcher_send(hass, f"{DOMAIN}_add_logger", logger_name, friendly_name)
@@ -183,17 +184,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         logger_name = call.data.get("logger_name")
         friendly_name = call.data.get("friendly_name")
-        _LOGGER.info(
-            "Request to remove logger configuration for '%s' (%s).",
-            friendly_name,
-            logger_name
-        )
 
         if logger_name in hass.data[DOMAIN]["loggers"]:
             del hass.data[DOMAIN]["loggers"][logger_name]
             with counter_handler._lock:
                 hass.data[DOMAIN]["counters"].pop(logger_name, None)
+            # Stop managing the logger: reset its level so it falls back to its
+            # inherited level. A core-pinned namespace is owned by Home
+            # Assistant core, so removing the managed entry leaves it untouched.
+            if not is_core_pinned(hass, logger_name):
+                logging.getLogger(logger_name).setLevel(logging.NOTSET)
             await save_data()
+            _LOGGER.info(
+                "Removed logger '%s' (%s).",
+                friendly_name,
+                logger_name,
+            )
             async_dispatcher_send(hass, f"{DOMAIN}_remove_logger", logger_name)
             async_dispatcher_send(hass, f"{DOMAIN}_sensors_changed")
 
@@ -251,7 +257,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         threshold = call.data["events"]
         info = hass.data[DOMAIN]["loggers"].get(logger_name)
         if not info:
-            _LOGGER.warning("set_alert_threshold: '%s' is not managed.", logger_name)
+            _LOGGER.warning("Alert threshold for '%s' is not managed.", logger_name)
             return
         info["alert_threshold"] = threshold
         if "level" in call.data:
