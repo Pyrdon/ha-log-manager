@@ -1,8 +1,9 @@
 {
   "name": "log-manager-js-tests",
   "private": true,
+  "type": "module",
   "scripts": {
-    "test": "jest"
+    "test": "node --experimental-vm-modules ./node_modules/.bin/jest"
   },
   "devDependencies": {
     "jest": "^29.7.0",
