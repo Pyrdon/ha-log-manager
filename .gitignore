@@ -3,3 +3,6 @@ __pycache__/
 *.pyo
 .coverage
 tests/js/node_modules/
+tests/js/coverage/
+coverage/
+tools/
