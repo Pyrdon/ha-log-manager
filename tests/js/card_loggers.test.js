@@ -378,7 +378,8 @@ describe("LogManagerCard", () => {
 
     test("disclaimer states counting is WARNING and above", () => {
       const html = loggers.renderLogPanelHtml(cardInstance, "t.logger");
-      expect(html).toContain("WARNING and above");
+      expect(html).toContain("WARNINGs");
+      expect(html).toContain("separately from any recording");
     });
 
     test("renders the captured WARNING+ entries", () => {
@@ -391,18 +392,24 @@ describe("LogManagerCard", () => {
       expect(html).toContain("some error");
     });
 
-    test("no suppression tooltip while the logger's level is WARNING", () => {
+    test("no suppression line while the logger's level is WARNING", () => {
       const html = loggers.renderLogPanelHtml(cardInstance, "t.logger");
-      expect(html).not.toContain("discarded before the counters");
+      expect(html).not.toContain('class="count-warning"');
+      expect(html).toContain("separately from any recording");
     });
 
-    test("explains in the disclaimer tooltip when the logger is above WARNING", () => {
+    test("states the own-level suppression when the logger is above WARNING", () => {
       cardInstance._hass.states["select.test"].attributes.effective_level = "ERROR";
 
       const html = loggers.renderLogPanelHtml(cardInstance, "t.logger");
-      expect(html).toContain("discards these events before the counter handler runs");
+      expect(html).toContain('class="count-warning"');
+      expect(html).toContain("This logger is set to");
       expect(html).toContain("ERROR");
-      expect(html).toContain("WARNING and above");
+      expect(html).toContain("so events below it never alert.");
+      expect(html).toContain("WARNINGs</span> and above, separately from any recording");
+      // The removed tooltips must not survive on the visible lines.
+      expect(html).not.toContain('class="count-warning" title=');
+      expect(html).not.toContain('class="log-disclaimer" title=');
     });
 
     test("per-logger controls share one row without a counting control", () => {
@@ -423,7 +430,7 @@ describe("LogManagerCard", () => {
       const html = loggers.renderLogPanelHtml(cardInstance, "t.logger");
       expect(html).toContain('class="reset-btn"');
       expect(html).toContain("Clear");
-      expect(html).toContain("re-arms its alert");
+      expect(html).toContain("Clear captured entries and counts");
     });
   });
 

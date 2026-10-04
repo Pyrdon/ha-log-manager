@@ -78,7 +78,14 @@ export const CARD_STYLES_RECORDING = `        /* Recording setup needs room for 
           background: rgba(var(--rgb-primary-text-color), 0.05);
         }
 
-        .btn-secondary.paused {
+        /* The live Pause control is green while running; once paused it turns
+           orange to signal the viewer is frozen on a stale snapshot. */
+        #live-pause-btn {
+          color: #4caf50;
+          border-color: #4caf50;
+        }
+
+        #live-pause-btn.paused {
           color: #ff9800;
           border-color: #ff9800;
         }
@@ -93,8 +100,6 @@ export const CARD_STYLES_RECORDING = `        /* Recording setup needs room for 
         }
 
         .logger-checklist {
-          max-height: 380px;
-          overflow-y: auto;
           margin: 12px 0;
           border: 1px solid var(--divider-color);
           border-radius: 6px;
@@ -138,6 +143,69 @@ export const CARD_STYLES_RECORDING = `        /* Recording setup needs room for 
           margin: 8px 0;
           font-size: 13px;
           color: var(--secondary-text-color);
+        }
+
+        /* Searchable checkbox multi-select logger filter. */
+        .logger-filter-btn {
+          width: 100%;
+          padding: 4px 6px;
+          border-radius: 4px;
+          border: 1px solid var(--divider-color);
+          background: var(--card-background-color);
+          color: var(--primary-text-color);
+          font-size: 13px;
+          text-align: left;
+          cursor: pointer;
+        }
+
+        .logger-filter-panel {
+          position: absolute;
+          top: 100%;
+          left: 0;
+          right: 0;
+          z-index: 20;
+          margin-top: 2px;
+          padding: 6px;
+          background: var(--card-background-color);
+          border: 1px solid var(--divider-color);
+          border-radius: 4px;
+          box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        }
+
+        .logger-filter-search {
+          width: calc(100% - 12px);
+          margin-bottom: 4px;
+          padding: 4px 6px;
+          border-radius: 4px;
+          border: 1px solid var(--divider-color);
+          background: var(--card-background-color);
+          color: var(--primary-text-color);
+          font-size: 12px;
+        }
+
+        .logger-filter-list {
+          max-height: 200px;
+          overflow-y: auto;
+        }
+
+        .logger-filter-item {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          padding: 3px 4px;
+          font-size: 12px;
+          cursor: pointer;
+          word-break: break-all;
+        }
+
+        .logger-filter-item:hover {
+          background: rgba(var(--rgb-primary-text-color), 0.05);
+        }
+
+        .logger-filter-item input[type="checkbox"] {
+          margin: 0;
+          cursor: pointer;
+          flex-shrink: 0;
         }
 
         .profile-save-row {
@@ -220,9 +288,14 @@ export const CARD_STYLES_RECORDING = `        /* Recording setup needs room for 
           flex-shrink: 0;
         }
 
-        .exclude-toggle:hover {
+        .exclude-toggle:hover:not(:disabled) {
           color: var(--primary-text-color);
           border-color: var(--primary-text-color);
+        }
+
+        .exclude-toggle:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
         }
 
         .exclude-area {
@@ -231,11 +304,21 @@ export const CARD_STYLES_RECORDING = `        /* Recording setup needs room for 
           padding-left: 26px;
         }
 
+        /* Always-visible exclusion line: sits on its own full-width row below
+           the logger/verbosity controls, independent of the collapsible editor.
+           Collapses to nothing when there are no chips. */
         .exclude-chips {
           display: flex;
+          flex-direction: column;
+          align-items: flex-start;
           flex-wrap: wrap;
           gap: 4px;
-          margin-bottom: 4px;
+          flex-basis: 100%;
+          margin-top: 4px;
+        }
+
+        .exclude-chips:empty {
+          display: none;
         }
 
         .exclude-chip {
@@ -415,6 +498,19 @@ export const CARD_STYLES_RECORDING = `        /* Recording setup needs room for 
           font-size: 13px;
         }
 
+        /* Summary/status text is informational: keep it out of text selection. */
+        #live-summary,
+        #live-status-text,
+        #results-summary {
+          user-select: none;
+          -webkit-user-select: none;
+        }
+
+        .summary-recorded-line {
+          color: var(--secondary-text-color);
+          margin-bottom: 6px;
+        }
+
         .summary-title {
           font-weight: 600;
           font-size: 13px;
@@ -524,6 +620,7 @@ export const CARD_STYLES_RECORDING = `        /* Recording setup needs room for 
           top: 0;
           bottom: 0;
           width: 6px;
+          border-right: 1px solid var(--divider-color);
         }
 
 `;

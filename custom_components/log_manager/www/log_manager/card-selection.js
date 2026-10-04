@@ -94,6 +94,16 @@ export function handleSelectionClick(card, container, target, e) {
       card._selectionAnchorRow = row;
       refreshSelection(card, container);
     } else {
+      // A plain click on the sole already-selected entry clears it.
+      const soleSelected = keys.length > 0
+        && card._selectedKeys.size === keys.length
+        && keys.every(k => card._selectedKeys.has(k));
+      if (soleSelected) {
+        card._selectedKeys.clear();
+        card._selectionAnchorRow = null;
+        refreshSelection(card, container);
+        return;
+      }
       card._selectedKeys.clear();
       keys.forEach(k => card._selectedKeys.add(k));
       card._selectionAnchorRow = row;

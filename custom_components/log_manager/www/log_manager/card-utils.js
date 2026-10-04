@@ -69,6 +69,14 @@ export function isMoreVerbose(to, current) {
   return ti !== -1 && ci !== -1 && ti < ci;
 }
 
+// True when choosing `to` raises the logger's configured level from `current`.
+// ALL is a capture sentinel with no settable logger counterpart: it only
+// removes the capture floor while the logger's own level still gates emission,
+// so it never raises and must not be prompted or restored as a level.
+export function needsLevelRaise(to, current) {
+  return to !== "ALL" && isMoreVerbose(to, current);
+}
+
 // HA date/time format configuration with safe fallbacks.
 export function localeSettings(hass) {
   const locale = (hass && hass.locale) || {};
@@ -125,13 +133,34 @@ export function formatDateTime(ts, hass) {
   return `${dateText} ${timeText}`;
 }
 
+// Locale-aware time of day, honouring the region's 12/24-hour convention.
+// `seconds` defaults on; the dedup group label uses minute resolution.
+export function formatClockTime(ts, hass, { seconds = true } = {}) {
+  const date = new Date((ts || 0) * 1000);
+  const locale = (hass && hass.locale && hass.locale.language) || undefined;
+  const { timeFormat } = localeSettings(hass);
+  const hour12 = timeFormat === "12" ? true : timeFormat === "24" ? false : undefined;
+  const options = { hour: "2-digit", minute: "2-digit" };
+  if (seconds) options.second = "2-digit";
+  if (hour12 !== undefined) options.hour12 = hour12;
+  return new Intl.DateTimeFormat(locale, options).format(date);
+}
+
 // Sanitized timestamp for download filenames: no path separators or other
-// unsafe characters, whitespace collapsed to a single underscore.
-export function formatFileTimestamp(date) {
+// unsafe characters, whitespace collapsed to a single underscore. The date
+// part follows the region's date ordering; it defaults to year-month-day.
+export function formatFileTimestamp(date, hass) {
   const pad = (n) => String(n).padStart(2, "0");
-  const raw =
-    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_` +
+  const byType = {
+    year: String(date.getFullYear()),
+    month: pad(date.getMonth() + 1),
+    day: pad(date.getDate()),
+  };
+  const order = datePartOrder(localeSettings(hass).dateFormat) || ["year", "month", "day"];
+  const datePart = order.map((k) => byType[k]).join("-");
+  const timePart =
     `${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`;
+  const raw = `${datePart}_${timePart}`;
   return raw.replace(/[^0-9A-Za-z_-]+/g, "_").replace(/\s+/g, "_");
 }
 
@@ -154,16 +183,14 @@ export function dedupKey(entry) {
 }
 
 // Minute-resolution label for a dedup group timestamp.
-export function dedupMinute(ts, locale) {
-  return new Date(ts * 1000).toLocaleTimeString(
-    locale, { hour: "2-digit", minute: "2-digit", hour12: false }
-  );
+export function dedupMinute(ts, hass) {
+  return formatClockTime(ts, hass, { seconds: false });
 }
 
 // A group's time span: one minute shows once, a cross-minute run shows a range.
-export function dedupRangeText(firstTs, lastTs, locale) {
-  const first = dedupMinute(firstTs, locale);
-  const last = dedupMinute(lastTs, locale);
+export function dedupRangeText(firstTs, lastTs, hass) {
+  const first = dedupMinute(firstTs, hass);
+  const last = dedupMinute(lastTs, hass);
   return first === last ? first : `${first}–${last}`;
 }
 
@@ -177,9 +204,11 @@ export const utils = {
   compareEntriesBySeverity,
   levelFilterFloor,
   isMoreVerbose,
+  needsLevelRaise,
   localeSettings,
   datePartOrder,
   formatDateTime,
+  formatClockTime,
   formatFileTimestamp,
   formatDuration,
   dedupKey,

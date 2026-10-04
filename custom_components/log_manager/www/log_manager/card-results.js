@@ -35,17 +35,20 @@ export function updateExportButtonState(card) {
     ? `Copy ${selectedCount} selected`
     : "Copy all";
   card._liveSavePlainBtn.title = `Save ${scope} entries as a plain-text .log file`;
-  card._liveSaveJsonlBtn.title = `Save ${scope} entries as JSON Lines (.jsonl).`;
+  card._liveSaveJsonlBtn.title = `Save ${scope} entries as JSONL (.jsonl).`;
   card._liveCopyBtn.title = selectedCount > 0
     ? `Copy ${selectedCount} selected entr${selectedCount === 1 ? "y" : "ies"} to clipboard`
     : `Copy ${scope} entries to clipboard`;
 }
 
 export function showRecordingResults(card) {
-    const logs = card._recordingBuffer;
-    const duration = card._recordingDuration;
     const count = card._recordingLogCount;
     const hasEntries = count > 0;
+
+    // Accumulate the emitting loggers from the buffer; a reloaded card may have
+    // no recorded-loggers list. Paint the checkboxes lazily.
+    liveView.accumulateLoggerFilterNames(card);
+    if (card._loggerFilterOpen) liveView.refreshLoggerFilterIfGrown(card);
 
     // Hide live top bar, show completed state.
     if (card._liveDialogTitle) card._liveDialogTitle.textContent = "Recording results";
@@ -60,9 +63,11 @@ export function showRecordingResults(card) {
     if (card._recordingDedupToggle) card._recordingDedupToggle.checked = liveView.isDedupEnabled(card);
 
     updateExportButtonState(card);
+    // The recorded-count line moves into the results summary (so "Copy summary"
+    // captures it too). The live summary line is only used for the empty state.
     card._liveSummary.textContent = hasEntries
-      ? `Recorded ${count} log entr${count === 1 ? "y" : "ies"} over ${duration} second${duration === 1 ? "" : "s"}.`
-      : `No log events matched the configured levels during this session.`;
+      ? ""
+      : `No events matched the configured levels.`;
 
     if (hasEntries) {
       // Live expansions don't transfer: results groups start collapsed.
@@ -92,7 +97,8 @@ export function rebuildResultsPreview(card) {
       return;
     }
     const levelFilter = card._liveLevelFilter.value;
-    const loggerFilter = card._liveLoggerFilter.value;
+    const loggerFilter = card._loggerFilterSelected;
+    liveView.accumulateLoggerFilterNames(card);
     let html = liveView.previewHeaderHtml(card);
     // Results render oldest-first, matching the live view, so a group's first
     // id is its first chronological entry in both views.
@@ -126,9 +132,7 @@ export function rebuildResultsPreview(card) {
   }
 
 export function resultsLineHtml(card, entry) {
-    const time = new Date(entry.timestamp * 1000).toLocaleTimeString(
-      card._locale(), { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }
-    );
+    const time = utils.formatClockTime(entry.timestamp, card._hass);
     const level = entry.level;
     const colors = utils.levelColors(level);
     const logger = loggersApi.loggerCellHtml(card, entry.logger);
@@ -146,7 +150,7 @@ export function resultsGroupHtml(card, run) {
     const colors = utils.levelColors(run.level);
     // Results groups start collapsed; live expansions don't transfer.
     const expanded = card._expandedDedupKeys.has(run.key);
-    return `<div class="log-preview-group selectable-entry" data-sel-keys="${utils.escapeAttr(JSON.stringify(selection.runKeys(card, run)))}" draggable="false" data-logger="${utils.escapeAttr(run.logger)}" data-level="${utils.escapeAttr(run.level)}" data-key="${utils.escapeAttr(run.key)}" data-first-id="${run.firstId}" data-count="${run.count}" data-ids="${utils.escapeAttr(run.ids.join(","))}" style="background: ${colors.rowBg};" title="Identical entries grouped — expand to see each occurrence">
+    return `<div class="log-preview-group" data-sel-keys="${utils.escapeAttr(JSON.stringify(selection.runKeys(card, run)))}" draggable="false" data-logger="${utils.escapeAttr(run.logger)}" data-level="${utils.escapeAttr(run.level)}" data-key="${utils.escapeAttr(run.key)}" data-first-id="${run.firstId}" data-count="${run.count}" data-ids="${utils.escapeAttr(run.ids.join(","))}" style="background: ${colors.rowBg};" title="${utils.escapeAttr(liveView.DEDUP_GROUP_TITLE)}">
       ${liveView.dedupRowInnerHtml(card, run, colors)}
     </div><div class="log-preview-group-items" style="display: ${expanded ? "" : "none"};">${liveView.dedupItemsInnerHtml(card, run)}</div>`;
   }
@@ -158,7 +162,6 @@ export function summarizeResults(card, logs) {
     // non-standard levels by real severity rather than alphabetically.
     const severityNo = {};
     const loggers = {};
-    const repeats = {};
     for (const entry of logs) {
       severity[entry.level] = (severity[entry.level] || 0) + 1;
       if (severityNo[entry.level] == null && entry.levelno != null) {
@@ -166,17 +169,6 @@ export function summarizeResults(card, logs) {
       }
       const root = loggersApi.managedRootFor(card, entry.logger);
       loggers[root] = (loggers[root] || 0) + 1;
-      const key = utils.dedupKey(entry);
-      if (!repeats[key]) {
-        repeats[key] = {
-          key,
-          logger: root,
-          level: entry.level,
-          message: entry.message,
-          count: 0,
-        };
-      }
-      repeats[key].count += 1;
     }
     const top = (rows, limit) => {
       // Code-unit tie-break: locale-independent so top-5 picks are stable.
@@ -186,7 +178,6 @@ export function summarizeResults(card, logs) {
     const loggerRows = Object.entries(loggers).map(([name, count]) => (
       { label: name, logger: name, count, sortKey: name }
     ));
-    const repeatRows = Object.values(repeats).map(row => ({ ...row, sortKey: row.key }));
     return {
       total: logs.length,
       severity: severityOrder
@@ -201,7 +192,6 @@ export function summarizeResults(card, logs) {
           ))
           .map(level => ({ level, count: severity[level] }))),
       loggers: top(loggerRows, 5),
-      repeats: top(repeatRows, 5),
     };
   }
 
@@ -232,18 +222,21 @@ export function hideResultsSummary(card) {
 export function renderResultsSummary(card) {
     const el = ensureResultsSummaryEl(card);
     if (!el) return;
-    // The summary follows the active results filter, matching the table.
-    const levelFilter = card._liveLevelFilter ? card._liveLevelFilter.value : "ALL";
-    const loggerFilter = card._liveLoggerFilter ? card._liveLoggerFilter.value : "";
-    const visible = card._recordingBuffer.filter(entry =>
-      liveView.entryMatchesFilter(card, entry, levelFilter, loggerFilter)
-    );
-    const summary = summarizeResults(card, visible);
-    if (summary.total === 0) {
+    // The recorded-count line belongs to the summary and must survive a filter
+    // that hides every entry, so gate the block on the session total instead.
+    const recordedTotal = card._recordingLogCount || 0;
+    if (recordedTotal === 0) {
       el.style.display = "none";
       el.innerHTML = "";
       return;
     }
+    // The details follow the active results filter, matching the table.
+    const levelFilter = card._liveLevelFilter ? card._liveLevelFilter.value : "ALL";
+    const loggerFilter = card._loggerFilterSelected || new Set();
+    const visible = card._recordingBuffer.filter(entry =>
+      liveView.entryMatchesFilter(card, entry, levelFilter, loggerFilter)
+    );
+    const summary = summarizeResults(card, visible);
     const esc = (s) => utils.escapeHtml(String(s == null ? "" : s));
     const escAttr = (s) => utils.escapeAttr(String(s == null ? "" : s));
     const friendly = (name) => {
@@ -257,20 +250,17 @@ export function renderResultsSummary(card) {
       return `<span style="color: ${colors.color};">${esc(level)} ${count}</span>`;
     }).join(" · ");
     const loggerRows = summary.loggers.top.map(({ logger, count }) =>
-      `<div class="summary-row"><span class="summary-label" title="${escAttr(logger)}">${esc(friendly(logger))}</span><span class="summary-count">${count}</span></div>`
+      `<div class="summary-row"><span class="summary-label" title="${escAttr(logger)}">${esc(friendly(logger))}</span><span class="summary-count">×${count}</span></div>`
     ).join("") + (summary.loggers.more > 0 ? `<div class="results-summary-more">+${summary.loggers.more} more</div>` : "");
-    const repeatRows = summary.repeats.top.map(({ logger, level, message, count }) => {
-      const text = String(message == null ? "" : message);
-      const short = text.length > 80 ? text.slice(0, 80) + "…" : text;
-      return `<div class="summary-row" title="${escAttr(text)}"><span class="summary-label">${esc(friendly(logger))} ${esc(level)}</span><span class="summary-message">${esc(short)}</span><span class="summary-count">×${count}</span></div>`;
-    }).join("") + (summary.repeats.more > 0 ? `<div class="results-summary-more">+${summary.repeats.more} more</div>` : "");
-    el.innerHTML = `
+    const recordedLine = `Recorded ${recordedTotal} log entr${recordedTotal === 1 ? "y" : "ies"} over ${utils.formatDuration(card._recordingDuration || 0)}.`;
+    // With every entry filtered out, keep just the recorded line.
+    const details = summary.total === 0 ? "" : `
       <div class="summary-title">Summary</div>
       <div class="summary-sev-line">${sevLine}</div>
       <div class="summary-section-title">Loggers</div>
-      ${loggerRows}
-      <div class="summary-section-title">Most repeated messages</div>
-      ${repeatRows}`;
+      ${loggerRows}`;
+    el.innerHTML = `
+      <div class="summary-recorded-line">${esc(recordedLine)}</div>${details}`;
     el.style.display = "";
   }
 
@@ -297,6 +287,8 @@ export function closeLiveView(card) {
     liveView.cleanupLivePolling(card);
     card._liveViewOpen = false;
     card._resultsShown = false;
+    // Close the picker but keep the remembered ticked set for the next open.
+    liveView.closeLoggerFilter(card);
     hideResultsSummary(card);
     card._recordingLiveDialog.classList.remove("visible");
     card._recordingLiveDialog.style.display = "none";
@@ -315,8 +307,12 @@ export function closeLiveView(card) {
   }
 
 export function downloadLogs(card, format) {
-    const logs = card._recordingBuffer;
-    const dateStr = utils.formatFileTimestamp(new Date());
+    // Download exactly the selection when one exists, otherwise everything.
+    const selectedKeys = new Set(selectedBufferKeys(card));
+    const logs = selectedKeys.size > 0
+      ? card._recordingBuffer.filter(e => selectedKeys.has(selection.entryKey(card, e)))
+      : card._recordingBuffer;
+    const dateStr = utils.formatFileTimestamp(new Date(), card._hass);
 
     let content, filename, mimeType;
 
@@ -390,6 +386,9 @@ export function attachResults(card) {
         rebuildResultsPreview(card);
         renderResultsSummary(card);
       } else if (card._liveViewOpen) {
+        // Live expansions are keyed by plain dedup key; a regrouping can merge
+        // runs differently, so drop stale expansion state before rebuilding.
+        card._expandedDedupKeys.clear();
         liveView.rebuildLivePreview(card);
       }
     });

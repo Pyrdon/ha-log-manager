@@ -49,6 +49,7 @@ let cardClass = null;
 // concern functions directly and stub them with jest.spyOn(object, "fn").
 // A frozen ESM namespace cannot be spied on; the object can.
 export { utils } from "../../custom_components/log_manager/www/log_manager/card-utils.js";
+export { ui } from "../../custom_components/log_manager/www/log_manager/card-ui.js";
 export { loggers } from "../../custom_components/log_manager/www/log_manager/card-loggers.js";
 export { addForm } from "../../custom_components/log_manager/www/log_manager/card-add-form.js";
 export { selection } from "../../custom_components/log_manager/www/log_manager/card-selection.js";

@@ -67,6 +67,31 @@ export function copyText(card, text) {
     navigator.clipboard.writeText(String(text)).catch(err => console.error("Failed to copy:", err));
   }
 
+// Copy with a visible fallback: when the clipboard write rejects, surface a
+// themed dialog telling the user to copy the text manually rather than failing
+// silently.
+export function copyTextWithFallback(card, text) {
+    if (text == null || text === "") return;
+    navigator.clipboard.writeText(String(text)).catch(err => {
+      console.error("Failed to copy:", err);
+      loggers.showDeleteConfirm(card,
+        "Copy failed. Select the text and press Ctrl+C to copy it manually.",
+        () => {},
+        "Copy",
+        "OK"
+      );
+    });
+  }
+
+// Themed menu for the results summary and status text: copy the element's own
+// text.
+export function summaryMenuItems(card, el) {
+    const text = (el && el.textContent) || "";
+    return [
+      { label: "Copy summary", disabled: !text, action: () => copyTextWithFallback(card, text) },
+    ];
+  }
+
 export function entriesToText(card, entries) {
     return entries.map(entry => {
       const time = utils.formatDateTime(entry.timestamp, card._hass);
@@ -79,6 +104,22 @@ export function entriesToText(card, entries) {
 export function handleListContextMenu(card, e) {
     // Text-editing surfaces keep the browser's native menu.
     if (e.target.closest && e.target.closest("input, textarea, select")) return;
+    // Group headers are toggles, not loggers: give them a themed menu too so
+    // right-click does not fall through to the browser's menu.
+    const header = e.target.closest ? e.target.closest(".log-group-header") : null;
+    if (header) {
+      e.preventDefault();
+      const group = header.dataset.group || "";
+      showContextMenu(card, [
+        { label: "Copy path prefix", action: () => copyText(card, group) },
+        { label: "Collapse or expand section", action: () => {
+          const collapsed = !loggers.getCollapsedGroups(card)[group];
+          loggers.setGroupCollapsed(card, group, collapsed);
+          card._scheduleUpdate && card._scheduleUpdate();
+        } },
+      ], e.clientX, e.clientY);
+      return;
+    }
     const row = e.target.closest ? e.target.closest(".log-row") : null;
     const loggerName = row && row.dataset.loggerName;
     if (!loggerName) return;
@@ -232,12 +273,37 @@ export function handlePreviewCopy(card, e) {
 // Wire the context menu onto the preview, logger list, checklist and history
 // table. Called from the card shell once the UI elements exist.
 export function attachContextMenu(card) {
-  // Right-click context menu, shared by every non-text surface. Text inputs
-  // keep the browser's cut/copy/paste menu.
-  card._livePreview.addEventListener("contextmenu", (e) => {
+  // One contextmenu handler on the live/results dialog suppresses the native
+  // browser menu everywhere inside it, EXCEPT over text-entry controls (input,
+  // textarea, select) where cut/copy/paste must stay native. The entry table
+  // gets the themed preview menu; the summary/status text gets Copy/Select-all;
+  // anywhere else the native menu is suppressed with no themed menu.
+  const onDialogContextMenu = (e) => {
+    const target = e.target;
+    if (target && target.closest && target.closest("input, textarea, select")) return;
     e.preventDefault();
-    showContextMenu(card, previewMenuItems(card), e.clientX, e.clientY);
-  });
+    if (target && target.closest && target.closest(".log-preview")) {
+      showContextMenu(card, previewMenuItems(card), e.clientX, e.clientY);
+      return;
+    }
+    const summary = target && target.closest
+      ? target.closest("#results-summary, #live-summary, #live-status-text")
+      : null;
+    if (summary) {
+      showContextMenu(card, summaryMenuItems(card, summary), e.clientX, e.clientY);
+      return;
+    }
+    hideContextMenu(card);
+  };
+  if (card._recordingLiveDialog) {
+    card._recordingLiveDialog.addEventListener("contextmenu", onDialogContextMenu);
+  } else if (card._livePreview) {
+    // Defensive fallback for a card built without the dialog element.
+    card._livePreview.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      showContextMenu(card, previewMenuItems(card), e.clientX, e.clientY);
+    });
+  }
   card._livePreview.addEventListener("scroll", () => hideContextMenu(card));
   card._activeList.addEventListener("contextmenu", (e) => handleListContextMenu(card, e));
   card._loggerChecklist.addEventListener("contextmenu", (e) => handleChecklistContextMenu(card, e));
@@ -254,6 +320,8 @@ export const contextMenu = {
   showContextMenu,
   hideContextMenu,
   copyText,
+  copyTextWithFallback,
+  summaryMenuItems,
   entriesToText,
   handleListContextMenu,
   handleChecklistContextMenu,

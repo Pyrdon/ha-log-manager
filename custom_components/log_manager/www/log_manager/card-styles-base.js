@@ -21,20 +21,10 @@ export const CARD_STYLES_BASE = `      <style>
           background: var(--card-background-color);
           color: var(--primary-text-color);
         }
-        button.set-all-apply {
-          padding: 3px 10px;
-          font-size: 12px;
-          border-radius: 4px;
-          border: 1px solid var(--divider-color);
-          background: none;
-          color: var(--secondary-text-color);
-          cursor: pointer;
+        select.set-all-level:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
         }
-        button.set-all-apply:hover:not(:disabled) {
-          color: var(--primary-text-color);
-          border-color: var(--primary-text-color);
-        }
-        button.set-all-apply:disabled { opacity: 0.5; cursor: default; }
         .active-list { margin-bottom: 0; display: flex; flex-direction: column; gap: 8px; }
 
         .log-row {
@@ -211,7 +201,6 @@ export const CARD_STYLES_BASE = `      <style>
         /* Explains why a verbose count level captures nothing. */
         .count-warning {
           font-size: 11px;
-          color: #ff9800;
           line-height: 1.35;
           margin-bottom: 6px;
         }
@@ -399,6 +388,15 @@ select.level-select {
           border-color: rgba(var(--rgb-primary-text-color), 0.3);
         }
 
+        select.level-select:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+
+        select.level-select:disabled:hover {
+          border-color: var(--divider-color);
+        }
+
         .add-section-wrapper {
           max-height: 0;
           opacity: 0;
@@ -549,6 +547,29 @@ select.level-select {
         .toggle-add-btn:hover {
           background: rgba(var(--rgb-primary-text-color), 0.05);
           color: var(--primary-text-color);
+        }
+
+        /* Disabled ghost buttons dim like the other disabled controls; the
+           background override beats the generic button:disabled grey fill. */
+        .toggle-add-btn:disabled {
+          background: none;
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+
+        .toggle-add-btn:disabled:hover {
+          background: none;
+        }
+
+        /* The record button's label stacks one line per block span; a flex
+           container ignores <br>, so each line is its own block. */
+        .record-text-line {
+          display: block;
+          line-height: 1.2;
+        }
+        .record-text-count {
+          font-size: 11px;
+          color: var(--secondary-text-color);
         }
 
 `;

@@ -1,10 +1,12 @@
 import { concern, registerConcern } from "./card-core.js";
 import { utils } from "./card-utils.js";
+import { ui } from "./card-ui.js";
 
 // Late-bound cross-module seam: `card-core.js` holds the registry.
 const contextMenu = concern("contextMenu");
 const loggers = concern("loggers");
 const recordingSession = concern("recordingSession");
+const recordingSetup = concern("recordingSetup");
 const selection = concern("selection");
 
 // addForm concern for the Log Manager card.
@@ -66,10 +68,26 @@ export function closeAddSection(card) {
   card._editingPath = null;
   card._addSectionWrapper.style.overflow = "hidden";
   card._addSectionWrapper.classList.remove("visible");
+  tintConfigurePane(card, null);
   card._toggleIcon.setAttribute("icon", "mdi:plus");
   card._toggleText.innerText = "Add logger";
   restoreAddSectionPosition(card);
   clearState(card);
+}
+
+// Tint the configure pane with the edited logger's level colour, or clear the
+// tint when no logger is being edited.
+export function tintConfigurePane(card, level) {
+  const pane = card._addSectionWrapper.querySelector(".add-section");
+  if (!pane) return;
+  if (!level) {
+    pane.style.background = "";
+    pane.style.borderLeft = "";
+    return;
+  }
+  const colors = utils.levelColors(level);
+  pane.style.background = colors.rowBg;
+  pane.style.borderLeft = `3px solid ${colors.color}`;
 }
 
 export function restoreAddSectionPosition(card) {
@@ -216,20 +234,65 @@ export function filterDropdown(card, filterText) {
   });
 }
 
+// Tooltip shown on the bulk controls when they are disabled.
+const SET_ALL_RECORDING_HINT = "Set all is unavailable while a recording is active.";
+const SET_ALL_NO_LOGGERS_HINT = "Add a logger to use Set all.";
+const RECORD_NO_LOGGERS_HINT = "Add at least one logger to record log events.";
+
+// Single source of truth for the two bulk controls' disabled state AND their
+// disabled-state tooltip. Computed from the same facts for every writer: no
+// managed loggers disables Set all and, unless an undiscarded recording is
+// held, Record; an active recording additionally locks Set all (a bulk level
+// change would corrupt the capture) while leaving Record enabled as the stop
+// control. Nothing else may write `_setAllLevel.disabled` or
+// `_recordBtn.disabled`.
+//
+// Title precedence: this function owns both controls' *disabled* tooltip. The
+// record button's *enabled* title stays owned by `updateRecordingUI`, so the
+// enabled branch never clobbers a fresh title: it restores the cached enabled
+// title only when the "no loggers" hint is currently shown (meaning this
+// function was the last writer), and otherwise caches the title it sees.
+export function refreshSetupControls(card) {
+  const states = (card._hass && card._hass.states) || {};
+  const hasLoggers = Object.keys(states).some(eid =>
+    eid.startsWith("select.") &&
+    states[eid] &&
+    states[eid].attributes &&
+    states[eid].attributes.logger_name
+  );
+  const recording = card._recordingState === "recording" || card._recordingState === "stopping";
+  const hasSaved = card._recordingState === "completed" || card._recordingState === "results";
+  if (card._setAllLevel) {
+    card._setAllLevel.disabled = !hasLoggers || recording;
+    if (recording) card._setAllLevel.title = SET_ALL_RECORDING_HINT;
+    else if (!hasLoggers) card._setAllLevel.title = SET_ALL_NO_LOGGERS_HINT;
+    else card._setAllLevel.title = card._setAllDefaultTitle || card._setAllLevel.title;
+  }
+  if (card._recordBtn) {
+    card._recordBtn.disabled = !hasLoggers && !hasSaved && !recording;
+    if (card._recordBtn.disabled) {
+      card._recordBtn.title = RECORD_NO_LOGGERS_HINT;
+    } else if (card._recordBtn.title === RECORD_NO_LOGGERS_HINT) {
+      if (card._recordEnabledTitle) card._recordBtn.title = card._recordEnabledTitle;
+    } else {
+      card._recordEnabledTitle = card._recordBtn.title;
+    }
+  }
+}
+
 export function updateActiveList(card) {
   const rawActiveEntities = Object.keys(card._hass.states).filter(eid => {
     return eid.startsWith("select.") && card._hass.states[eid].attributes.logger_name;
   });
-
-  // "Set all" only makes sense when there is at least one managed logger.
-  if (card._setAllApply) card._setAllApply.disabled = rawActiveEntities.length === 0;
+  // Keep the bulk controls in step with the managed-logger count on every pass.
+  refreshSetupControls(card);
 
   if (rawActiveEntities.length === 0) {
     card._activeList.innerHTML = `
       <div class="empty-state"
         style="color: var(--secondary-text-color); font-style: italic;
         font-size: 14px; text-align: center; padding: 16px;">
-        No loggers currently managed.
+        No loggers managed.
       </div>`;
 
     if (card._isAddSectionVisible) {
@@ -299,7 +362,7 @@ export function updateActiveList(card) {
     const displayName = stateObj.attributes.friendly_name || eid;
     const currentLevel = stateObj.state;
     const isPinned = !!stateObj.attributes.core_pinned;
-    const pinnedTitle = "Managed by Home Assistant — set via YAML logger:, the integration's debug toggle, or the logger.set_level service.";
+    const pinnedTitle = loggers.PINNED_REASON;
     const chipInfo = loggers.effectiveChipInfo(card, stateObj, currentLevel, isUnavailable);
     const chipSig = chipInfo ? `${chipInfo.effectiveLevel}|${chipInfo.sourceText}` : "";
     const raisedChipHtml = loggers.renderRaisedChipHtml(card, 
@@ -341,7 +404,14 @@ export function updateActiveList(card) {
       row.style.background = colors.rowBg;
       row.style.borderStyle = inherited ? "dashed" : "";
 
-      const selectOptions = options.map(opt => `<option value="${opt}">${opt}</option>`).join("");
+      const selectOptions = options.map(opt => {
+        // Colour options by severity, not just the selected value.
+        const c = ui.optionColor(opt);
+        // NOTSET means "no level configured here"; show it as readable text
+        // while keeping the option's value so the service call is unchanged.
+        const label = opt === "NOTSET" ? "Not set" : opt;
+        return `<option value="${opt}" style="color: ${c};">${label}</option>`;
+      }).join("");
 
       // The selector tooltip shows lock reasons plus the current level/source;
       // the full level-change history lives in the history dialog.
@@ -400,6 +470,7 @@ export function updateActiveList(card) {
         selectEl.style.backgroundColor = colors.bg;
         selectEl.style.color = colors.color;
         selectEl.style.borderStyle = inherited ? "dashed" : "";
+        ui.tintLevelOptions(selectEl);
 
         selectEl.addEventListener("change", (e) => {
           card._hass.callService("select", "select_option", {
@@ -418,6 +489,7 @@ export function updateActiveList(card) {
           card._editingPath = actualLoggerName;
           // Start from the current name; a different selection recomputes it.
           card._friendlyNameDirty = true;
+          tintConfigurePane(card, currentLevel);
 
           // Expand in place, directly beneath the row being edited.
           insertAddSectionAfter(card, row);
@@ -464,6 +536,8 @@ export function updateActiveList(card) {
       row.querySelector(".remove-btn").addEventListener("click", (e) => {
         e.stopPropagation();
         loggers.showDeleteConfirm(card, `Remove logger "${displayName}"?`, () => {
+          // Close the configure pane if it is editing the logger being removed.
+          if (card._editingPath === actualLoggerName) closeAddSection(card);
           if (!isUnavailable) {
             card._hass.callService("log_manager", "remove_logger", {
               logger_name: actualLoggerName,
@@ -516,6 +590,7 @@ export function updateActiveList(card) {
           select.style.backgroundColor = colors.bg;
           select.style.color = colors.color;
           select.style.borderStyle = inherited ? "dashed" : "";
+          ui.tintLevelOptions(select);
         }
       }
 
@@ -523,6 +598,13 @@ export function updateActiveList(card) {
       if (prev.level !== currentLevel || prev.colorLevel !== colorLevel) {
         row.style.background = colors.rowBg;
         row.style.borderStyle = inherited ? "dashed" : "";
+      }
+
+      // Keep an open configure pane in step with a later level change: the tint
+      // is set imperatively at edit-open, so retint reactively when the edited
+      // logger's level changes while its pane is visible.
+      if (card._isAddSectionVisible && card._editingPath === actualLoggerName && prev.colorLevel !== colorLevel) {
+        tintConfigurePane(card, colorLevel);
       }
 
       // Update counter badges in-place — never destroy badge DOM, so title tooltips survive.
@@ -718,6 +800,17 @@ export function updateActiveList(card) {
 
   // Re-apply the explicit selection after any panel rebuild.
   selection.refreshSelection(card, card._activeList);
+  // Keep every level select (rows, set-all) tinted after a rebuild.
+  ui.tintAllLevelSelects(card);
+}
+
+// Shared repaint seam: a committed control change may still hold focus inside
+// the panel, so an optional logger name forces that panel to rebuild even
+// while a control inside it is focused (bypassing the focused-control
+// deferral). Every commit-driven repaint routes through here.
+export function refreshAfterCommit(card, loggerName = null) {
+  if (loggerName) card._panelRefreshRequested = loggerName;
+  updateActiveList(card);
 }
 
 export function validateAddButton(card) {
@@ -736,6 +829,14 @@ export function validateAddButton(card) {
                         !card._availableLoggers.includes(loggerPath) &&
                         loggerPath !== card._editingPath;
 
+  if (loggerPath.length === 0) {
+    // A blank path is rejected outright with an explicit unknown-path state.
+    card._addBtn.disabled = true;
+    card._addBtn.innerText = "Unknown path";
+    card._addBtn.style.background = "var(--error-color)";
+    return;
+  }
+
   if (isDuplicatePath || isDuplicateName || isUnknownPath) {
     card._addBtn.disabled = true;
     if (isDuplicatePath) card._addBtn.innerText = "Path managed";
@@ -749,6 +850,16 @@ export function validateAddButton(card) {
   }
 }
 
+// Return the bulk "Set all" control to its non-level placeholder and repaint.
+// Called after an apply or cancel so the same level can be re-picked without
+// first switching away.
+export function resetSetAll(card) {
+  if (!card._setAllLevel) return;
+  card._setAllLevel.value = "";
+  ui.tintLevelOptions(card._setAllLevel);
+  card._setAllLevel.style.borderColor = "";
+}
+
 // Wire the add/edit logger form and "set all" bulk control onto the card.
 export function attachAddForm(card) {
   const toggleSection = () => {
@@ -757,17 +868,34 @@ export function attachAddForm(card) {
   };
   card._toggleAddBtn.addEventListener("click", toggleSection);
 
-  // "Set all" bulk level control.
-  card._setAllLevel.innerHTML = ["NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
-    .map(l => `<option value="${l}">${l}</option>`).join("");
+  // "Set all" bulk level control: the five named levels behind a non-level
+  // placeholder (NOTSET is excluded). There is no sticky committed value: the
+  // control returns to the placeholder after every apply or cancel, so
+  // re-picking any level — including the one just applied — always fires
+  // `change`. A native select fires no `change` when the already-shown option
+  // is re-picked, which is exactly why the placeholder is required.
+  card._setAllDefaultTitle = card._setAllLevel.title;
+  card._setAllLevel.innerHTML =
+    `<option value="" disabled selected>Set all</option>` +
+    ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+      .map(l => `<option value="${l}" style="color: ${ui.optionColor(l)};">${l}</option>`).join("");
+  card._setAllLevel.value = "";
   const paintSetAll = () => {
+    ui.tintLevelOptions(card._setAllLevel);
+    if (!card._setAllLevel.value) {
+      // The placeholder is not a severity: use the neutral control border.
+      card._setAllLevel.style.borderColor = "";
+      return;
+    }
     const colors = utils.levelColors(card._setAllLevel.value);
-    card._setAllLevel.style.color = colors.color;
     card._setAllLevel.style.borderColor = colors.color;
   };
   paintSetAll();
-  card._setAllLevel.addEventListener("change", paintSetAll);
-  card._setAllApply.addEventListener("click", () => recordingSession.applySetAll(card));
+  card._setAllLevel.addEventListener("change", () => {
+    if (!card._setAllLevel.value) return;
+    paintSetAll();
+    recordingSetup.applySetAll(card, card._setAllLevel.value);
+  });
 
   const debouncedFilter = card._debounce((val) => {
     filterDropdown(card, val);
@@ -844,6 +972,8 @@ export function attachAddForm(card) {
           friendly_name: friendlyName
         });
       }, 250);
+      // Close the configure pane after a committed Update.
+      closeAddSection(card);
     } else {
       card._hass.callService("log_manager", "add_logger", {
         logger_name: loggerPath,
@@ -863,6 +993,7 @@ export const addForm = {
   applyAutoFriendlyName,
   toggleExpand,
   closeAddSection,
+  tintConfigurePane,
   restoreAddSectionPosition,
   insertAddSectionAfter,
   openAddSection,
@@ -872,7 +1003,10 @@ export const addForm = {
   highlightMatch,
   renderOptionLabel,
   filterDropdown,
+  refreshSetupControls,
   updateActiveList,
+  refreshAfterCommit,
+  resetSetAll,
   validateAddButton,
   attachAddForm,
 };

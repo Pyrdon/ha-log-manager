@@ -29,6 +29,8 @@ module.exports = {
     "<rootDir>/custom_components/log_manager/www/log_manager/card-live-view.js",
     "<rootDir>/custom_components/log_manager/www/log_manager/card-results.js",
     "<rootDir>/custom_components/log_manager/www/log_manager/card-context-menu.js",
+    "<rootDir>/custom_components/log_manager/www/log_manager/card-ui.js",
+    "<rootDir>/custom_components/log_manager/www/log_manager/card-core.js",
   ],
   // Gate for the later extraction steps: the monolith measured
   // 85.72% stmts / 75.78% branch / 79.9% funcs / 85.72% lines before the split.

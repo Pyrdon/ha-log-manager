@@ -1,5 +1,6 @@
 import { concern, registerConcern } from "./card-core.js";
 import { utils } from "./card-utils.js";
+import { ui } from "./card-ui.js";
 
 // Late-bound cross-module seam: `card-core.js` holds the registry.
 const addForm = concern("addForm");
@@ -56,7 +57,13 @@ export function startRecording(card, loggers, levelOverrides, excludes) {
       });
     });
     card._recordingRaiseIntents = {};
-    if (card._liveLoggerFilter) card._liveLoggerFilter.value = "";
+    // A new session starts with a fresh logger filter: drop the accumulated
+    // names and the remembered ticked set.
+    card._loggerFilterNames = new Set();
+    card._loggerFilterSelected = new Set();
+    card._loggerFilterRendered = null;
+    if (card._loggerFilterSearch) card._loggerFilterSearch.value = "";
+    liveView.updateLoggerFilterButton(card);
     if (card._liveLevelFilter) card._liveLevelFilter.value = "ALL";
 
     recordingSession.updateRecordingUI(card);
@@ -85,6 +92,16 @@ export function startRecording(card, loggers, levelOverrides, excludes) {
       recordingSession.updateRecordingUI(card);
     });
   }
+
+// Clear the remembered logger-filter selection and accumulated names. Called
+// wherever the recording buffer itself is discarded.
+export function resetLoggerFilter(card) {
+    card._loggerFilterNames = new Set();
+    card._loggerFilterSelected = new Set();
+    card._loggerFilterRendered = null;
+    if (card._loggerFilterSearch) card._loggerFilterSearch.value = "";
+    liveView.updateLoggerFilterButton(card);
+}
 
 export function stopRecording(card) {
     recordingSession.cleanupRecordingIntervals(card);
@@ -197,6 +214,7 @@ export function discardRecording(card) {
         card._recordingState = null;
         card._liveLastId = 0;
         liveView.resetDedupState(card);
+        resetLoggerFilter(card);
         card._resultsShown = false;
         results.hideResultsSummary(card);
         card._liveViewOpen = false;
@@ -219,6 +237,7 @@ export function clearRecordingBuffer(card) {
         card._recordingBackendCount = 0;
         card._liveLastId = 0;
         liveView.resetDedupState(card);
+        resetLoggerFilter(card);
         card._resultsShown = false;
         results.hideResultsSummary(card);
         if (card._livePreview) card._livePreview.innerHTML = "";
@@ -233,8 +252,10 @@ export function promptRaiseSequence(card, items) {
     const head = items[0];
     const rest = items.slice(1);
     const friendly = head.friendlyName || head.loggerName;
-    loggers.showDeleteConfirm(card, 
-      `${utils.escapeHtml(friendly)} is set to ${loggers.levelPillHtml(card, head.from)}. Raise it to ${loggers.levelPillHtml(card, head.to)} for this recording and restore it afterwards?`,
+    // A neutral Yes/No prompt: raising for a recording is informative, not
+    // destructive.
+    ui.showConfirm(card, 
+      `Raise ${utils.escapeHtml(friendly)} from ${loggers.levelPillHtml(card, head.from)} to ${loggers.levelPillHtml(card, head.to)} for this recording? It will be restored afterwards.`,
       () => {
         card._recordingRaiseIntents[head.loggerName] = {
           entityId: head.entityId,
@@ -243,19 +264,22 @@ export function promptRaiseSequence(card, items) {
         };
         promptRaiseSequence(card, rest);
       },
-      "Raise logger level",
-      "Raise for recording",
-      () => {
-        // Cancelling skips this raise and restores the logger's configured level.
-        if (head.selectEl) {
-          head.selectEl.value = head.from;
-          head.selectEl.dataset.prevLevel = head.from;
-          applyRecordingLevelStyle(card, head.selectEl, head.from);
-        }
-        delete card._recordingRaiseIntents[head.loggerName];
-        promptRaiseSequence(card, rest);
-      },
-      true
+      {
+        title: "Raise logger level",
+        confirmLabel: "Yes",
+        cancelLabel: "No",
+        htmlMessage: true,
+        onCancel: () => {
+          // Cancelling skips this raise and restores the logger's configured level.
+          if (head.selectEl) {
+            head.selectEl.value = head.from;
+            head.selectEl.dataset.prevLevel = head.from;
+            applyRecordingLevelStyle(card, head.selectEl, head.from);
+          }
+          delete card._recordingRaiseIntents[head.loggerName];
+          promptRaiseSequence(card, rest);
+        },
+      }
     );
   }
 
@@ -266,22 +290,24 @@ export function handleRecordingLevelChange(card, sel) {
     const current = stateObj ? stateObj.state : null;
     const prev = sel.dataset.prevLevel || current;
     const friendly = (stateObj && stateObj.attributes.friendly_name) || loggerName;
-    if (utils.isMoreVerbose(to, current)) {
+    if (utils.needsLevelRaise(to, current)) {
       // Revert now; the prompt restores the verbose value on confirm.
       sel.value = prev;
       applyRecordingLevelStyle(card, sel, prev);
-      loggers.showDeleteConfirm(card, 
-        `${utils.escapeHtml(friendly)} is set to ${loggers.levelPillHtml(card, current)}. Raise it to ${loggers.levelPillHtml(card, to)} for this recording and restore it afterwards?`,
+      ui.showConfirm(card, 
+        `Raise ${utils.escapeHtml(friendly)} from ${loggers.levelPillHtml(card, current)} to ${loggers.levelPillHtml(card, to)} for this recording? It will be restored afterwards.`,
         () => {
           sel.value = to;
           sel.dataset.prevLevel = to;
           applyRecordingLevelStyle(card, sel, to);
           card._recordingRaiseIntents[loggerName] = { entityId: stateObj.entity_id, from: current, to };
         },
-        "Raise logger level",
-        "Raise for recording",
-        null,
-        true
+        {
+          title: "Raise logger level",
+          confirmLabel: "Yes",
+          cancelLabel: "No",
+          htmlMessage: true,
+        }
       );
       return;
     }
@@ -313,17 +339,25 @@ export function restoreRecordingLevels(card) {
 
 export function recordingLoggerState(card, loggerName) {
     return Object.values((card._hass && card._hass.states) || {}).find(
-      s => s.attributes && s.attributes.logger_name === loggerName
+      s => s.entity_id && s.entity_id.startsWith("select.") &&
+           s.attributes && s.attributes.logger_name === loggerName
     ) || null;
   }
 
 export function updateRecordingUI(card) {
+    // `#record-text` is a flex container (`.toggle-add-btn` uses display:flex),
+    // so a `<br>` will not stack. Build one block span per line instead.
+    const setRecordText = (label, count) => {
+      card._recordText.innerHTML = count == null
+        ? `<span class="record-text-line">${label}</span>`
+        : `<span class="record-text-line">${label}</span><span class="record-text-line record-text-count">${count}</span>`;
+    };
     if (card._recordingState === "stopping") {
       card._recordIcon.setAttribute("icon", "mdi:stop-circle");
       card._recordBtn.classList.add("btn-record");
       card._recordBtn.classList.remove("btn-view-recording");
       card._recordBtn.title = "Stopping recording...";
-      card._recordText.textContent = "Stopping...";
+      setRecordText("Stopping...");
       card._liveBtn.style.display = "none";
       card._discardRecordBtn.style.display = "none";
     } else if (card._recordingState === "recording") {
@@ -335,7 +369,7 @@ export function updateRecordingUI(card) {
       const remaining = Math.max(0, card._recordingMaxDuration - elapsed);
       const mins = String(Math.floor(remaining / 60)).padStart(2, "0");
       const secs = String(remaining % 60).padStart(2, "0");
-      card._recordText.textContent = `Stop (${mins}:${secs})`;
+      setRecordText(`Stop (${mins}:${secs})`);
       card._liveBtn.style.display = "";
       card._discardRecordBtn.style.display = "none";
     } else if (card._recordingState === "completed") {
@@ -343,7 +377,7 @@ export function updateRecordingUI(card) {
       card._recordBtn.classList.remove("btn-record");
       card._recordBtn.classList.add("btn-view-recording");
       card._recordBtn.title = "View recorded logs";
-      card._recordText.textContent = `View Recording (${card._recordingLogCount})`;
+      setRecordText("View recording", `(${card._recordingLogCount} ${card._recordingLogCount === 1 ? "entry" : "entries"})`);
       card._liveBtn.style.display = "none";
       card._discardRecordBtn.style.display = "";
     } else if (card._recordingState === "results") {
@@ -351,7 +385,7 @@ export function updateRecordingUI(card) {
       card._recordBtn.classList.remove("btn-record");
       card._recordBtn.classList.add("btn-view-recording");
       card._recordBtn.title = "Viewing recording results";
-      card._recordText.textContent = "Viewing";
+      setRecordText("Viewing");
       card._liveBtn.style.display = "none";
       card._discardRecordBtn.style.display = "";
     } else {
@@ -359,10 +393,13 @@ export function updateRecordingUI(card) {
       card._recordBtn.classList.remove("btn-record");
       card._recordBtn.classList.remove("btn-view-recording");
       card._recordBtn.title = "Record log events for export";
-      card._recordText.textContent = "Record";
+      setRecordText("Record");
       card._liveBtn.style.display = "none";
       card._discardRecordBtn.style.display = "none";
     }
+    // One shared rule owns the bulk controls' disabled state; recording locks
+    // Set all while leaving Record enabled to stop the session.
+    addForm.refreshSetupControls(card);
   }
 
 export function updateRecordingCountBadge(card, row, loggerName, count, isRecording) {
@@ -469,6 +506,7 @@ export function attachRecordingSession(card) {
 // Mutable API object: the cross-concern call seam and the test stub target.
 export const recordingSession = {
   startRecording,
+  resetLoggerFilter,
   stopRecording,
   pollRecordingStatus,
   checkExistingRecording,

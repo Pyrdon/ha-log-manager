@@ -81,6 +81,22 @@ describe("levelColors", () => {
     expect(stamp).toBe("2023-05-07_13-05-09");
     expect(stamp).not.toMatch(/[^0-9A-Za-z_-]/);
   });
+  test("formatFileTimestamp honours the region's date order", () => {
+    const date = new Date(2023, 4, 7, 13, 5, 9);
+    const dmy = utils.formatFileTimestamp(date, hassWithLocale({ language: "en-GB", date_format: "DMY" }));
+    expect(dmy).toBe("07-05-2023_13-05-09");
+    const mdy = utils.formatFileTimestamp(date, hassWithLocale({ language: "en-US", date_format: "MDY" }));
+    expect(mdy).toBe("05-07-2023_13-05-09");
+    expect(dmy).not.toMatch(/[^0-9A-Za-z_-]/);
+  });
+  test("formatClockTime honours the 12/24-hour convention", () => {
+    const date = new Date(2023, 4, 7, 13, 5, 9);
+    const ts = date.getTime() / 1000;
+    expect(utils.formatClockTime(ts, hassWithLocale({ language: "en-GB", time_format: "24" })))
+      .toContain("13:05:09");
+    expect(utils.formatClockTime(ts, hassWithLocale({ language: "en-US", time_format: "12" })))
+      .toMatch(/01:05:09\s?(PM|pm)/);
+  });
   test("levelIndex gives ALL a real position and never -1", () => {
     expect(utils.levelIndex("ALL")).toBe(0);
     expect(utils.levelIndex("DEBUG")).toBe(1);
@@ -91,6 +107,12 @@ describe("levelColors", () => {
     expect(utils.isMoreVerbose("DEBUG", "ALL")).toBe(false);
     expect(utils.isMoreVerbose("DEBUG", "INFO")).toBe(true);
     expect(utils.isMoreVerbose("INFO", "INFO")).toBe(false);
+  });
+  test("needsLevelRaise excludes ALL, which has no settable logger counterpart", () => {
+    expect(utils.needsLevelRaise("ALL", "INFO")).toBe(false);
+    expect(utils.needsLevelRaise("ALL", "CRITICAL")).toBe(false);
+    expect(utils.needsLevelRaise("DEBUG", "INFO")).toBe(true);
+    expect(utils.needsLevelRaise("INFO", "INFO")).toBe(false);
   });
   test("entrySeverity prefers levelno and falls back to the level name", () => {
     expect(utils.entrySeverity("INFO", 25)).toBe(25);

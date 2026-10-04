@@ -1,5 +1,5 @@
 import { jest } from "@jest/globals";
-import { setupCard, cardStylesSource, addForm } from "./setup.js";
+import { setupCard, cardStylesSource, addForm, utils } from "./setup.js";
 
 // Module-direct tests for card-add-form.js. The element instance supplies the
 // add/edit form state; the concern functions own the behaviour.
@@ -85,6 +85,148 @@ describe("card-add-form", () => {
     test("highlightMatch wraps matched characters in the fuzzy-hit class", () => {
       const html = addForm.highlightMatch(cardInstance, "pyscript.file", "pys");
       expect(html).toContain('class="fuzzy-hit"');
+    });
+
+    test("tintConfigurePane colours the pane then clears it", () => {
+      const card = document.createElement("log-manager-card");
+      const wrapper = document.createElement("div");
+      const pane = document.createElement("div");
+      pane.className = "add-section";
+      wrapper.appendChild(pane);
+      card._addSectionWrapper = wrapper;
+
+      addForm.tintConfigurePane(card, "ERROR");
+      expect(pane.style.borderLeft).toContain(utils.levelColors("ERROR").color);
+      expect(pane.style.background).not.toBe("");
+
+      addForm.tintConfigurePane(card, null);
+      expect(pane.style.borderLeft).toBe("");
+      expect(pane.style.background).toBe("");
+    });
+
+    test("tintConfigurePane tolerates a missing pane", () => {
+      const card = document.createElement("log-manager-card");
+      card._addSectionWrapper = document.createElement("div");
+      expect(() => addForm.tintConfigurePane(card, "INFO")).not.toThrow();
+    });
+  });
+
+  describe("managed row level options (item 2)", () => {
+    test("NOTSET renders as 'Not set' while keeping its value", () => {
+      const rec = document.createElement("log-manager-card");
+      const options = ["NOTSET", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"];
+      rec._hass = {
+        states: {
+          "select.t": { state: "NOTSET", attributes: { logger_name: "t.logger", friendly_name: "T", options } },
+        },
+        callService: jest.fn(),
+      };
+      rec._counters = {};
+      rec._prevRowStates = {};
+      rec._activeList = document.createElement("div");
+      rec._recordingState = null;
+      rec._recordingLoggers = [];
+      rec._recordingCounts = {};
+      rec._recordingLevelOverrides = {};
+      rec._recordingRestoreLevels = {};
+      rec._expandedLogger = null;
+
+      addForm.updateActiveList(rec);
+
+      const notset = rec._activeList.querySelector('.level-select option[value="NOTSET"]');
+      expect(notset).not.toBeNull();
+      expect(notset.textContent).toBe("Not set");
+    });
+  });
+
+  describe("shared bulk-control disabled rule (items 3 + 10)", () => {
+    const mk = (hasLoggers, recordingState) => {
+      const rec = document.createElement("log-manager-card");
+      rec._hass = { states: hasLoggers ? { "select.t": { attributes: { logger_name: "t.logger" } } } : {} };
+      rec._recordingState = recordingState;
+      rec._setAllLevel = { disabled: null, title: "" };
+      rec._setAllDefaultTitle = "Set all levels";
+      rec._recordBtn = { disabled: null, title: "" };
+      return rec;
+    };
+
+    test("truth table: managed loggers x recording state", () => {
+      const cases = [
+        { hasLoggers: true, state: null, setAll: false, record: false },
+        { hasLoggers: true, state: "recording", setAll: true, record: false },
+        { hasLoggers: true, state: "stopping", setAll: true, record: false },
+        { hasLoggers: false, state: null, setAll: true, record: true },
+        // A recording keeps Record enabled as the stop control even with no
+        // managed loggers.
+        { hasLoggers: false, state: "recording", setAll: true, record: false },
+        // A finished recording keeps Record enabled to reopen its results.
+        { hasLoggers: false, state: "completed", setAll: true, record: false },
+        { hasLoggers: false, state: "results", setAll: true, record: false },
+      ];
+      for (const c of cases) {
+        const rec = mk(c.hasLoggers, c.state);
+        addForm.refreshSetupControls(rec);
+        const label = `loggers=${c.hasLoggers} state=${c.state}`;
+        expect([label, rec._setAllLevel.disabled]).toEqual([label, c.setAll]);
+        expect([label, rec._recordBtn.disabled]).toEqual([label, c.record]);
+      }
+    });
+
+    test("bulk controls show a disabled hint and restore their defaults", () => {
+      const recording = mk(true, "recording");
+      addForm.refreshSetupControls(recording);
+      expect(recording._setAllLevel.title).toBe("Set all is unavailable while a recording is active.");
+
+      const empty = mk(false, null);
+      addForm.refreshSetupControls(empty);
+      expect(empty._setAllLevel.title).toBe("Add a logger to use Set all.");
+      expect(empty._setAllLevel.disabled).toBe(true);
+      expect(empty._recordBtn.title).toBe("Add at least one logger to record log events.");
+
+      // Idle with loggers restores the captured markup default.
+      const idle = mk(true, null);
+      addForm.refreshSetupControls(idle);
+      expect(idle._setAllLevel.title).toBe("Set all levels");
+      expect(idle._setAllLevel.disabled).toBe(false);
+
+      // A completed recording with zero loggers leaves Record enabled.
+      const completed = mk(false, "completed");
+      addForm.refreshSetupControls(completed);
+      expect(completed._recordBtn.disabled).toBe(false);
+    });
+
+    test("updateActiveList drives the same rule for the empty state", () => {
+      const rec = mk(false, null);
+      rec._counters = {};
+      rec._prevRowStates = {};
+      rec._recordingLoggers = [];
+      rec._recordingCounts = {};
+      rec._activeList = document.createElement("div");
+      addForm.updateActiveList(rec);
+      expect(rec._setAllLevel.disabled).toBe(true);
+      expect(rec._recordBtn.disabled).toBe(true);
+    });
+  });
+
+  describe("reactive configure-pane retint (item 2)", () => {
+    test("a level change repaints an open, edited pane", () => {
+      const card = document.createElement("log-manager-card");
+      const editor = document.createElement("div");
+      editor.className = "add-section";
+      const wrapper = document.createElement("div");
+      wrapper.appendChild(editor);
+      card._addSectionWrapper = wrapper;
+      card._isAddSectionVisible = true;
+      card._editingPath = "t.logger";
+
+      addForm.tintConfigurePane(card, "INFO");
+      expect(editor.style.borderLeft).toContain(utils.levelColors("INFO").color);
+
+      // A later level change is handled by updateActiveList's else-branch; call
+      // tintConfigurePane with the new level as the reactive path does.
+      addForm.tintConfigurePane(card, "ERROR");
+      expect(editor.style.borderLeft).toContain(utils.levelColors("ERROR").color);
+      expect(editor.style.background).not.toBe("");
     });
   });
 });

@@ -10,6 +10,7 @@ import {
   recordingSetup,
   loggers,
   addForm,
+  ui,
   utils,
 } from "./setup.js";
 
@@ -127,8 +128,8 @@ describe("LogManagerCard", () => {
     // _updateRecordingUI() touches.
     const stubRecordingUI = (c) => {
       c._recordIcon = { setAttribute: jest.fn() };
-      c._recordBtn = { classList: { add: jest.fn(), remove: jest.fn() } };
-      c._recordText = { textContent: "" };
+      c._recordBtn = { classList: { add: jest.fn(), remove: jest.fn() }, title: "" };
+      c._recordText = document.createElement("span");
       c._liveBtn = { style: { display: "" } };
       c._discardRecordBtn = { style: { display: "" } };
       c._recordingCounts = {};
@@ -264,7 +265,7 @@ describe("LogManagerCard", () => {
         clientHeight: 0,
       };
       rec._liveLevelFilter = { value: "ALL" };
-      rec._liveLoggerFilter = { value: "" };
+      rec._loggerFilterSelected = new Set();
       jest.spyOn(liveView, "updateLiveSummary").mockImplementation(() => {});
       rec._hass.connection.sendMessagePromise.mockResolvedValueOnce({
         entries: [
@@ -292,7 +293,7 @@ describe("LogManagerCard", () => {
         clientHeight: 0,
       };
       rec._liveLevelFilter = { value: "ALL" };
-      rec._liveLoggerFilter = { value: "" };
+      rec._loggerFilterSelected = new Set();
       jest.spyOn(liveView, "updateLiveSummary").mockImplementation(() => {});
       rec._hass.connection.sendMessagePromise.mockResolvedValueOnce({
         entries: [],
@@ -312,12 +313,16 @@ describe("LogManagerCard", () => {
       expect(liveView.entryMatchesFilter(cardInstance, entry, "ERROR", "")).toBe(false);
     });
 
-    test("_entryMatchesFilter matches only the exact logger, not its children", () => {
+    test("_entryMatchesFilter shows an entry when its logger is in the ticked set (REQ-CARD-080)", () => {
       const child = { logger: "rec.logger.child", level: "INFO" };
       const parent = { logger: "rec.logger", level: "INFO" };
-      expect(liveView.entryMatchesFilter(cardInstance, parent, "ALL", "rec.logger")).toBe(true);
-      expect(liveView.entryMatchesFilter(cardInstance, child, "ALL", "rec.logger")).toBe(false);
-      expect(liveView.entryMatchesFilter(cardInstance, child, "ALL", "other.logger")).toBe(false);
+      // The parent is ticked: only its own entries show, not the child's.
+      expect(liveView.entryMatchesFilter(cardInstance, parent, "ALL", new Set(["rec.logger"]))).toBe(true);
+      expect(liveView.entryMatchesFilter(cardInstance, child, "ALL", new Set(["rec.logger"]))).toBe(false);
+      // Ticking the emitting child shows its entries.
+      expect(liveView.entryMatchesFilter(cardInstance, child, "ALL", new Set(["rec.logger.child"]))).toBe(true);
+      // An empty set means "all loggers".
+      expect(liveView.entryMatchesFilter(cardInstance, child, "ALL", new Set())).toBe(true);
     });
   });
 
@@ -349,8 +354,82 @@ describe("LogManagerCard", () => {
 
       const debug = rec._loggerChecklist.querySelector('option[value="DEBUG"]');
       const warning = rec._loggerChecklist.querySelector('option[value="WARNING"]');
+      const all = rec._loggerChecklist.querySelector('option[value="ALL"]');
       expect(debug.dataset.moreVerbose).toBe("1");
       expect(warning.dataset.moreVerbose).toBeUndefined();
+      // ALL removes the capture floor but cannot raise the logger, so it is
+      // never marked as a raise.
+      expect(all.dataset.moreVerbose).toBeUndefined();
+      expect(all.textContent).not.toContain("\u2191");
+    });
+
+    test("selecting ALL sets the capture floor without prompting to raise", () => {
+      const rec = document.createElement("log-manager-card");
+      rec._hass = {
+        states: {
+          "select.t": {
+            entity_id: "select.t",
+            attributes: { logger_name: "t.logger", friendly_name: "T" },
+            state: "INFO",
+          },
+        },
+      };
+      rec._loggerChecklist = document.createElement("div");
+      rec._recordingSetupDialog = { style: {}, classList: { add: jest.fn(), remove: jest.fn() } };
+      rec._recordingSetupStart = { disabled: false };
+      rec._recordingRaiseIntents = {};
+      recordingSetup.openRecordingSetup(rec);
+
+      const select = rec._loggerChecklist.querySelector(".recording-level-select");
+      const cb = select.closest(".checklist-item").querySelector("input[type='checkbox']");
+      cb.checked = true;
+      cb.dispatchEvent(new Event("change", { bubbles: true }));
+
+      const confirmSpy = jest.spyOn(ui, "showConfirm").mockImplementation(() => {});
+      select.value = "ALL";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+
+      expect(confirmSpy).not.toHaveBeenCalled();
+      expect(rec._recordingRaiseIntents["t.logger"]).toBeUndefined();
+      expect(select.value).toBe("ALL");
+    });
+
+    test("changing a level in the setup fires the raise prompt via the change event", () => {
+      const rec = document.createElement("log-manager-card");
+      rec._hass = {
+        states: {
+          "select.t": {
+            entity_id: "select.t",
+            attributes: { logger_name: "t.logger", friendly_name: "T" },
+            state: "INFO",
+          },
+        },
+      };
+      rec._loggerChecklist = document.createElement("div");
+      rec._recordingSetupDialog = { style: {}, classList: { add: jest.fn(), remove: jest.fn() } };
+      rec._recordingSetupStart = { disabled: false };
+      rec._recordingRaiseIntents = {};
+      recordingSetup.openRecordingSetup(rec);
+
+      // The select must carry the logger name: handleRecordingLevelChange reads
+      // it to resolve the logger's configured level.
+      const select = rec._loggerChecklist.querySelector(".recording-level-select");
+      expect(select.dataset.logger).toBe("t.logger");
+      const cb = select.closest(".checklist-item").querySelector("input[type='checkbox']");
+      cb.checked = true;
+      cb.dispatchEvent(new Event("change", { bubbles: true }));
+
+      const confirmSpy = jest.spyOn(ui, "showConfirm").mockImplementation((card, msg, onConfirm) => onConfirm());
+      select.value = "DEBUG";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+
+      expect(confirmSpy).toHaveBeenCalledTimes(1);
+      expect(rec._recordingRaiseIntents["t.logger"]).toEqual({
+        entityId: "select.t",
+        from: "INFO",
+        to: "DEBUG",
+      });
+      expect(select.value).toBe("DEBUG");
     });
 
     test("confirming a raise records the intent instead of changing the level", () => {
@@ -365,7 +444,7 @@ describe("LogManagerCard", () => {
       item.innerHTML = `<select class="recording-level-select" data-logger="t.logger" data-prev-level="WARNING"><option value="WARNING">WARNING</option><option value="DEBUG">DEBUG</option></select>`;
       const sel = item.querySelector(".recording-level-select");
       sel.value = "DEBUG";
-      jest.spyOn(loggers, "showDeleteConfirm").mockImplementation((card, message, onConfirm) => onConfirm());
+      jest.spyOn(ui, "showConfirm").mockImplementation((card, message, onConfirm) => onConfirm());
 
       recordingSession.handleRecordingLevelChange(rec, sel);
 
@@ -389,7 +468,7 @@ describe("LogManagerCard", () => {
       item.innerHTML = `<select class="recording-level-select" data-logger="t.logger" data-prev-level="WARNING"><option value="WARNING">WARNING</option><option value="DEBUG">DEBUG</option></select>`;
       const sel = item.querySelector(".recording-level-select");
       sel.value = "DEBUG";
-      jest.spyOn(loggers, "showDeleteConfirm").mockImplementation((card, message, onConfirm, title, confirmLabel, onCancel) => onCancel && onCancel());
+      jest.spyOn(ui, "showConfirm").mockImplementation((card, message, onConfirm, opts) => opts && opts.onCancel && opts.onCancel());
 
       recordingSession.handleRecordingLevelChange(rec, sel);
 
@@ -438,8 +517,8 @@ describe("LogManagerCard", () => {
       const sel = item.querySelector(".recording-level-select");
       sel.value = "DEBUG";
       let captured = null;
-      jest.spyOn(loggers, "showDeleteConfirm").mockImplementation((card, message, onConfirm, title, confirmLabel, onCancel, htmlMessage) => {
-        captured = { msg: message, html: htmlMessage };
+      jest.spyOn(ui, "showConfirm").mockImplementation((card, message, onConfirm, opts = {}) => {
+        captured = { msg: message, html: opts.htmlMessage };
       });
 
       recordingSession.handleRecordingLevelChange(rec, sel);
@@ -459,8 +538,8 @@ describe("LogManagerCard", () => {
       const sel = item.querySelector(".recording-level-select");
       sel.value = "DEBUG";
       const cancels = [];
-      jest.spyOn(loggers, "showDeleteConfirm").mockImplementation((card, message, onConfirm, title, confirmLabel, onCancel) => {
-        cancels.push(onCancel);
+      jest.spyOn(ui, "showConfirm").mockImplementation((card, message, onConfirm, opts = {}) => {
+        cancels.push(opts.onCancel);
       });
       rec._recordingRaiseIntents = {};
 
@@ -486,7 +565,6 @@ describe("LogManagerCard", () => {
       rec._recordingBuffer = [];
       rec._recordingLevelOverrides = {};
       rec._livePreview = document.createElement("div");
-      rec._liveLoggerFilter = { value: "" };
       rec._liveLevelFilter = { value: "ALL" };
       rec._hass = {
         connection: { sendMessagePromise: jest.fn(() => new Promise(() => {})) },
@@ -528,7 +606,6 @@ describe("LogManagerCard", () => {
       rec._recordingBuffer = [];
       rec._recordingLevelOverrides = {};
       rec._livePreview = document.createElement("div");
-      rec._liveLoggerFilter = { value: "" };
       rec._liveLevelFilter = { value: "ALL" };
       rec._hass = {
         connection: { sendMessagePromise: jest.fn(() => Promise.reject(new Error("nope"))) },
@@ -557,6 +634,95 @@ describe("LogManagerCard", () => {
     });
   });
 
+  describe("recording button label (item 13)", () => {
+    const stub = () => {
+      const rec = document.createElement("log-manager-card");
+      rec._recordIcon = { setAttribute: jest.fn() };
+      rec._recordBtn = { classList: { add: jest.fn(), remove: jest.fn() }, title: "" };
+      rec._recordText = document.createElement("span");
+      rec._liveBtn = { style: { display: "" } };
+      rec._discardRecordBtn = { style: { display: "" } };
+      rec._recordingLogCount = 0;
+      return rec;
+    };
+
+    test("completed state renders the label and count on two block lines", () => {
+      const rec = stub();
+      rec._recordingState = "completed";
+      rec._recordingLogCount = 3;
+      recordingSession.updateRecordingUI(rec);
+
+      const lines = rec._recordText.querySelectorAll(".record-text-line");
+      expect(lines.length).toBe(2);
+      expect(lines[0].textContent).toBe("View recording");
+      expect(lines[1].textContent).toBe("(3 entries)");
+      // Block display is what makes a flex container stack the two lines.
+      expect(cardStylesSource).toMatch(/\.record-text-line\s*\{[^}]*display:\s*block/);
+    });
+
+    test("singular count uses 'entry'", () => {
+      const rec = stub();
+      rec._recordingState = "completed";
+      rec._recordingLogCount = 1;
+      recordingSession.updateRecordingUI(rec);
+      const lines = rec._recordText.querySelectorAll(".record-text-line");
+      expect(lines[1].textContent).toBe("(1 entry)");
+    });
+
+    test("recording and idle states stay single-line", () => {
+      const rec = stub();
+      rec._recordingState = null;
+      recordingSession.updateRecordingUI(rec);
+      expect(rec._recordText.querySelectorAll(".record-text-line").length).toBe(1);
+      expect(rec._recordText.textContent).toBe("Record");
+
+      rec._recordingState = "results";
+      recordingSession.updateRecordingUI(rec);
+      expect(rec._recordText.querySelectorAll(".record-text-line").length).toBe(1);
+      expect(rec._recordText.textContent).toBe("Viewing");
+    });
+  });
+
+  describe("Set all lock through the shared rule (item 10)", () => {
+    test("recording disables Set all but leaves Record enabled to stop", () => {
+      const rec = document.createElement("log-manager-card");
+      rec._recordIcon = { setAttribute: jest.fn() };
+      rec._recordBtn = { classList: { add: jest.fn(), remove: jest.fn() }, title: "" };
+      rec._recordText = document.createElement("span");
+      rec._liveBtn = { style: { display: "" } };
+      rec._discardRecordBtn = { style: { display: "" } };
+      rec._setAllLevel = { disabled: false };
+      rec._recordingState = "recording";
+      rec._recordingLoggers = ["t.logger"];
+      rec._recordingStartTime = Date.now();
+      rec._recordingMaxDuration = 300;
+      rec._hass = { states: { "select.t": { attributes: { logger_name: "t.logger" } } } };
+
+      recordingSession.updateRecordingUI(rec);
+
+      expect(rec._setAllLevel.disabled).toBe(true);
+      expect(rec._recordBtn.disabled).toBe(false);
+    });
+
+    test("idle state leaves Set all enabled when loggers exist", () => {
+      const rec = document.createElement("log-manager-card");
+      rec._recordIcon = { setAttribute: jest.fn() };
+      rec._recordBtn = { classList: { add: jest.fn(), remove: jest.fn() }, title: "" };
+      rec._recordText = document.createElement("span");
+      rec._liveBtn = { style: { display: "" } };
+      rec._discardRecordBtn = { style: { display: "" } };
+      rec._setAllLevel = { disabled: true };
+      rec._recordingState = null;
+      rec._recordingLoggers = [];
+      rec._hass = { states: { "select.t": { attributes: { logger_name: "t.logger" } } } };
+
+      recordingSession.updateRecordingUI(rec);
+
+      expect(rec._setAllLevel.disabled).toBe(false);
+      expect(rec._recordBtn.disabled).toBe(false);
+    });
+  });
+
   describe("raised indicator", () => {
     test("coexists with the effective chip and clears when not recording", () => {
       const rec = document.createElement("log-manager-card");
@@ -564,8 +730,11 @@ describe("LogManagerCard", () => {
         "t.logger": { entityId: "select.t", level: "INFO", raisedTo: "DEBUG" },
       };
       const chip = loggers.renderRaisedChipHtml(rec, "t.logger", true);
-      expect(chip).toContain("Raised to DEBUG");
+      expect(chip).toContain("\u2191 Raised to");
+      expect(chip).toContain("DEBUG");
       expect(chip).toContain("Restored to INFO");
+      // The raised level is tinted by severity.
+      expect(chip).toContain(utils.levelColors("DEBUG").color);
 
       const stateObj = {
         state: "NOTSET",
@@ -573,6 +742,23 @@ describe("LogManagerCard", () => {
       };
       expect(loggers.renderEffectiveChip(rec, stateObj, "NOTSET", false)).toContain("Effective:");
       expect(loggers.renderRaisedChipHtml(rec, "t.logger", false)).toBe("");
+    });
+
+    test("only the level token is tinted; the raised label stays neutral", () => {
+      const rec = document.createElement("log-manager-card");
+      rec._recordingRestoreLevels = {
+        "t.logger": { entityId: "select.t", level: "INFO", raisedTo: "DEBUG" },
+      };
+      const chip = loggers.renderRaisedChipHtml(rec, "t.logger", true);
+      // The severity colour wraps the level token only, never the label.
+      expect(chip).toContain(
+        `<span style="color: ${utils.levelColors("DEBUG").color}; font-weight: 600;">DEBUG</span>`
+      );
+      // The label line itself is neutral, not a hardcoded alert colour.
+      const rule = cardStylesSource.match(/\.raised-line\s*\{([^}]*)\}/);
+      expect(rule).not.toBeNull();
+      expect(rule[1]).toContain("var(--secondary-text-color)");
+      expect(rule[1]).not.toContain("#ff9800");
     });
 
     test("the row shows both the effective chip and the raised indicator", () => {
@@ -640,9 +826,9 @@ describe("LogManagerCard", () => {
       const locked = rec._activeList.querySelector('.log-row[data-entity-id="select.rec"] .level-select');
       const free = rec._activeList.querySelector('.log-row[data-entity-id="select.free"] .level-select');
       expect(locked.disabled).toBe(true);
-      expect(locked.title).toContain("locked");
+      expect(locked.title).toContain("Locked while recording");
       expect(free.disabled).toBe(false);
-      expect(free.title || "").not.toContain("locked");
+      expect(free.title || "").not.toContain("Locked");
     });
   });
 });

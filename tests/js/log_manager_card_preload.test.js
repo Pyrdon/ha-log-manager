@@ -14,13 +14,24 @@ import { LogManagerCard } from "../../custom_components/log_manager/www/log_mana
 function bareCard() {
   // Skip the constructor: it reads `liveViewModule()` at line 208, which is
   // itself only safe post-load. We exercise the `hass` setter / scheduler in
-  // isolation instead. `_hass` is intentionally incomplete so a
-  // not-yet-loaded module must not be dereferenced.
+  // isolation instead. `_hass` carries an empty `states` map and the minimal
+  // UI stubs so the scheduler path is safe even when another test file in the
+  // same worker has already resolved the sibling modules. The `_modulesLoaded
+  // = false` gate, not the stubs, is what the first assertion verifies.
   const card = Object.create(LogManagerCard.prototype);
   card._uiBuilt = true;
   card._modulesLoaded = false;
   card._updateScheduled = false;
-  card._hass = {};
+  card._hass = { states: {} };
+  card._activeList = document.createElement("div");
+  card._recordIcon = { setAttribute: () => {} };
+  card._recordBtn = { classList: { add: () => {}, remove: () => {} }, title: "" };
+  card._recordText = document.createElement("span");
+  card._liveBtn = { style: {} };
+  card._discardRecordBtn = { style: {} };
+  card._recordingState = null;
+  card._counters = {};
+  card._prevRowStates = {};
   return card;
 }
 
@@ -33,8 +44,8 @@ test("hass before siblings resolve neither throws nor schedules", () => {
     // First assignment builds the readiness gate, second hits the unloaded
     // branch. Neither may throw.
     expect(() => {
-      card.hass = { a: 1 };
-      card.hass = { a: 2 };
+      card.hass = { states: {}, a: 1 };
+      card.hass = { states: {}, a: 2 };
     }).not.toThrow();
     expect(scheduled).toBe(false);
 

@@ -65,6 +65,30 @@ export const CARD_STYLES_DIALOGS = `        /* Styled delete confirmation dialog
           filter: brightness(1.1);
         }
 
+        /* Neutral confirm dialog: same overlay chrome, non-destructive actions. */
+        .confirm-dialog-overlay {
+          display: none;
+          position: fixed;
+          top: 0; left: 0; right: 0; bottom: 0;
+          background: rgba(0, 0, 0, 0.5);
+          z-index: 1000000001;
+          align-items: center;
+          justify-content: center;
+        }
+        .confirm-dialog-box {
+          background: var(--card-background-color);
+          border-radius: 12px;
+          padding: 24px;
+          max-width: 400px;
+          width: 90%;
+          box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+        .confirm-dialog-message {
+          font-size: 14px;
+          color: var(--secondary-text-color);
+          margin-bottom: 20px;
+        }
+
         /* Recording UI styles */
         .recording-active {
           display: inline-flex;
@@ -129,9 +153,11 @@ export const CARD_STYLES_DIALOGS = `        /* Styled delete confirmation dialog
           margin-top: 2px;
         }
 
+        /* Only the level token is tinted by severity (inline span); the
+           "Raised to" label stays neutral. */
         .raised-line {
           font-size: 11px;
-          color: #ff9800;
+          color: var(--secondary-text-color);
           margin-top: 2px;
           font-weight: 600;
         }
@@ -200,6 +226,15 @@ export const CARD_STYLES_DIALOGS = `        /* Styled delete confirmation dialog
           display: flex;
         }
 
+        /* The confirm overlay also carries .dialog-overlay. Both selectors have
+           equal specificity and .dialog-overlay is declared later, so its shared
+           z-index would otherwise win and drop the confirm to the same layer as
+           the recording setup dialog (where DOM order puts it behind). This
+           higher-specificity rule keeps a raise prompt on top. */
+        .dialog-overlay.confirm-dialog-overlay {
+          z-index: 1000000001;
+        }
+
         .dialog-box {
           background: var(--card-background-color);
           border-radius: 12px;
@@ -210,7 +245,7 @@ export const CARD_STYLES_DIALOGS = `        /* Styled delete confirmation dialog
         }
 
         .dialog-box-wide {
-          max-width: 900px;
+          max-width: min(1100px, 95vw);
           max-height: 85vh;
           overflow-y: auto;
         }

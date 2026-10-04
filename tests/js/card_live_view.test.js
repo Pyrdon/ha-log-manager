@@ -1,5 +1,5 @@
 import { jest } from "@jest/globals";
-import { setupCard, liveView, results, contextMenu } from "./setup.js";
+import { setupCard, cardStylesSource, liveView, results, contextMenu, selection } from "./setup.js";
 
 let cardInstance;
 
@@ -30,7 +30,10 @@ describe("LogManagerCard", () => {
       delete cardInstance.config;
       cardInstance._livePreview = document.createElement("div");
       cardInstance._liveLevelFilter = { value: "ALL" };
-      cardInstance._liveLoggerFilter = { value: "" };
+      cardInstance._loggerFilterSelected = new Set();
+      cardInstance._loggerFilterNames = new Set();
+      cardInstance._loggerFilterRendered = null;
+      cardInstance._loggerFilterOpen = false;
       cardInstance._recordingBuffer = [];
       cardInstance._liveLastGroup = null;
       cardInstance._liveLastSingle = null;
@@ -79,7 +82,10 @@ describe("LogManagerCard", () => {
     });
 
     test("filter-hidden entries neither render nor split visible runs", () => {
-      cardInstance._liveLoggerFilter = { value: "a.logger" };
+      cardInstance._loggerFilterSelected = new Set(["a.logger"]);
+      // b.logger is listed but explicitly unticked, so reconciliation keeps the
+      // filter intent instead of auto-ticking it as newly seen.
+      cardInstance._loggerFilterNames = new Set(["a.logger", "b.logger"]);
       liveView.appendLiveEntries(cardInstance, [
         mk(0, 0, "a.logger"),
         mk(1, 1, "b.logger", "ERROR", "other"),
@@ -122,19 +128,22 @@ describe("LogManagerCard", () => {
       expect(items.style.display).toBe("none");
     });
 
-    test("double-clicking a group and clicking its count badge expand it", () => {
+    test("clicking a group's chevron or count badge expands it", () => {
       liveView.appendLiveEntries(cardInstance, [mk(0, 0, "a.logger"), mk(1, 5, "a.logger")]);
       const group = cardInstance._livePreview.querySelector(".log-preview-group");
       const items = group.nextElementSibling;
-      group.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+      // A single click on the chevron button expands; no double-click needed.
+      group.querySelector(".dedup-toggle").click();
       expect(items.style.display).toBe("");
+      // The count badge toggles too.
       group.querySelector(".dedup-count").click();
       expect(items.style.display).toBe("none");
     });
 
     test("live_dedup false renders the raw stream", () => {
       cardInstance.config = { type: "custom:log-manager-card", live_dedup: false };
-      cardInstance._liveLoggerFilter = { value: "a.logger" };
+      cardInstance._loggerFilterSelected = new Set(["a.logger"]);
+      cardInstance._loggerFilterNames = new Set(["a.logger", "b.logger"]);
       liveView.appendLiveEntries(cardInstance, [
         mk(0, 0, "a.logger"),
         mk(1, 1, "b.logger", "ERROR", "other"),
@@ -162,7 +171,8 @@ describe("LogManagerCard", () => {
         cardInstance._livePreview.querySelectorAll(".log-preview-line").length
       ).toBe(3);
 
-      cardInstance._liveLoggerFilter = { value: "a.logger" };
+      cardInstance._loggerFilterSelected = new Set(["a.logger"]);
+      cardInstance._loggerFilterNames = new Set(["a.logger", "b.logger"]);
       cardInstance._recordingBuffer = [
         mk(0, 0, "a.logger"),
         mk(1, 1, "b.logger", "ERROR", "other"),
@@ -232,7 +242,7 @@ describe("LogManagerCard", () => {
         expect(groups.length).toBe(1);
 
         // Changing filters must not flip results away from live ordering.
-        cardInstance._liveLoggerFilter = { value: "" };
+        cardInstance._loggerFilterSelected = new Set();
         liveView.applyLiveFilters(cardInstance);
         const rows = Array.from(
           cardInstance._livePreview.querySelectorAll(
@@ -305,7 +315,7 @@ describe("LogManagerCard", () => {
       rec._recordingBuffer = [{ id: 0, logger: "rec.logger", level: "INFO", message: "x" }];
       liveView.updateLiveSummary(rec);
       expect(rec._liveSummary.textContent).toBe(
-        "1 entry \u00B7 buffer at 0% \u00B7 1 logger recording \u00B7 1 with entry"
+        "1 entry \u00B7 1 logger recording \u00B7 1 with entry"
       );
     });
 
@@ -318,7 +328,7 @@ describe("LogManagerCard", () => {
       ];
       liveView.updateLiveSummary(rec);
       expect(rec._liveSummary.textContent).toBe(
-        "3 entries \u00B7 buffer at 0% \u00B7 3 loggers recording \u00B7 2 with entries"
+        "3 entries \u00B7 3 loggers recording \u00B7 2 with entries"
       );
     });
 
@@ -422,7 +432,7 @@ describe("LogManagerCard", () => {
         clientHeight: 0,
       };
       rec._liveLevelFilter = { value: "ALL" };
-      rec._liveLoggerFilter = { value: "" };
+      rec._loggerFilterSelected = new Set();
       rec._recordingBuffer = [];
       rec._liveLastId = 0;
       rec._liveSummary = { textContent: "" };
@@ -459,7 +469,7 @@ describe("LogManagerCard", () => {
       const rec = document.createElement("log-manager-card");
       rec._livePreview = document.createElement("div");
       rec._liveLevelFilter = { value: "ALL" };
-      rec._liveLoggerFilter = { value: "" };
+      rec._loggerFilterSelected = new Set();
       rec._recordingBuffer = buffer();
       rec._liveDedupOverride = false;
       liveView.rebuildLivePreview(rec);
@@ -475,7 +485,7 @@ describe("LogManagerCard", () => {
       const rec = document.createElement("log-manager-card");
       rec._livePreview = document.createElement("div");
       rec._liveLevelFilter = { value: "ALL" };
-      rec._liveLoggerFilter = { value: "" };
+      rec._loggerFilterSelected = new Set();
       rec._recordingBuffer = buffer();
       rec._liveDedupOverride = false;
       results.rebuildResultsPreview(rec);
@@ -487,23 +497,156 @@ describe("LogManagerCard", () => {
       expect(rec._livePreview.querySelectorAll(".log-preview-group").length).toBe(1);
     });
 
-    test("group row shows a single count plus the first entry id", () => {
+    test("group row shows a single count plus the id range (item 11)", () => {
       const rec = document.createElement("log-manager-card");
       rec._livePreview = document.createElement("div");
       rec._liveLevelFilter = { value: "ALL" };
-      rec._liveLoggerFilter = { value: "" };
+      rec._loggerFilterSelected = new Set();
       rec._recordingBuffer = buffer();
       liveView.appendLiveEntries(rec, rec._recordingBuffer);
 
       const group = rec._livePreview.querySelector(".log-preview-group");
       expect(group.querySelectorAll(".dedup-count").length).toBe(1);
       expect(group.querySelector(".dedup-count").textContent).toBe("×2");
-      expect(group.querySelector(".dedup-first-id").textContent).toBe("#1");
+      // ids 0 and 1 render 1-based as the range 1–2.
+      expect(group.querySelector(".dedup-first-id").textContent).toBe("1\u20132");
 
       group.querySelector(".dedup-toggle").click();
       const items = group.nextElementSibling.querySelectorAll(".log-preview-group-item");
       expect(items.length).toBe(2);
       expect(items[0].style.marginLeft).toBe("24px");
+    });
+
+    test("a single-entry run shows one id, not a range", () => {
+      const rec = document.createElement("log-manager-card");
+      const run = { key: "k", logger: "a.logger", level: "INFO", message: "m", source: "", firstId: 4, firstTs: 0, lastTs: 0, count: 1, times: [0], ids: [4] };
+      expect(liveView.dedupIdRangeText(run)).toBe("5");
+    });
+
+    test("the group heading is not selectable and a single click toggles it (REQ-CARD-093)", () => {
+      const rec = document.createElement("log-manager-card");
+      rec._livePreview = document.createElement("div");
+      rec._liveLevelFilter = { value: "ALL" };
+      rec._loggerFilterSelected = new Set();
+      rec._recordingBuffer = buffer();
+      liveView.appendLiveEntries(rec, rec._recordingBuffer);
+      const group = rec._livePreview.querySelector(".log-preview-group");
+      const items = group.nextElementSibling;
+      expect(group.classList.contains("selectable-entry")).toBe(false);
+      expect(items.style.display).toBe("none");
+
+      // A single click anywhere on the heading (not the chevron/badge) toggles.
+      group.querySelector(".msg-col").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      expect(items.style.display).toBe("");
+
+      // Occurrences remain individually selectable.
+      const firstItem = items.querySelector(".log-preview-group-item");
+      expect(firstItem.classList.contains("selectable-entry")).toBe(true);
+    });
+
+    test("bumping a group updates the id range in place", () => {
+      const rec = document.createElement("log-manager-card");
+      rec._livePreview = document.createElement("div");
+      rec._liveLevelFilter = { value: "ALL" };
+      rec._loggerFilterSelected = new Set();
+      rec._selectedKeys = new Set();
+      rec._expandedDedupKeys = new Set();
+      rec._recordingBuffer = buffer();
+      liveView.appendLiveEntries(rec, rec._recordingBuffer);
+      const group = rec._livePreview.querySelector(".log-preview-group");
+      expect(group.querySelector(".dedup-first-id").textContent).toBe("1\u20132");
+
+      const third = { id: 2, timestamp: 1700000010, logger: "a.logger", level: "ERROR", message: "boom", source: "m.py" };
+      rec._recordingBuffer.push(third);
+      liveView.appendLiveEntries(rec, [third]);
+      expect(group.querySelector(".dedup-first-id").textContent).toBe("1\u20133");
+    });
+
+    test("bumping a group updates it in place, appending one child (item 11)", () => {
+      const rec = document.createElement("log-manager-card");
+      rec._livePreview = document.createElement("div");
+      rec._liveLevelFilter = { value: "ALL" };
+      rec._loggerFilterSelected = new Set();
+      rec._selectedKeys = new Set();
+      rec._expandedDedupKeys = new Set();
+      rec._recordingBuffer = buffer();
+      liveView.appendLiveEntries(rec, rec._recordingBuffer);
+
+      const group = rec._livePreview.querySelector(".log-preview-group");
+      const items = group.nextElementSibling;
+      const rowIdentity = group;
+      const toggleIdentity = group.querySelector(".dedup-toggle");
+      // Expand so the new child should be visible too.
+      toggleIdentity.click();
+      expect(items.querySelectorAll(".log-preview-group-item").length).toBe(2);
+
+      const third = { id: 2, timestamp: 1700000010, logger: "a.logger", level: "ERROR", message: "boom", source: "m.py" };
+      rec._recordingBuffer.push(third);
+      liveView.appendLiveEntries(rec, [third]);
+
+      // The row identity and its toggle listener are preserved (no innerHTML
+      // rebuild), the count grew, and exactly one child was appended.
+      expect(rec._livePreview.querySelector(".log-preview-group")).toBe(rowIdentity);
+      expect(group.querySelector(".dedup-toggle")).toBe(toggleIdentity);
+      expect(group.querySelector(".dedup-count").textContent).toBe("×3");
+      expect(items.querySelectorAll(".log-preview-group-item").length).toBe(3);
+      // Still expanded (state preserved).
+      expect(items.style.display).toBe("");
+    });
+
+    test("a selection on grouped occurrences survives the grouping toggle (item 8)", () => {
+      const rec = document.createElement("log-manager-card");
+      rec._livePreview = document.createElement("div");
+      rec._liveLevelFilter = { value: "ALL" };
+      rec._loggerFilterSelected = new Set();
+      rec._selectedKeys = new Set();
+      rec._expandedDedupKeys = new Set();
+      rec._recordingBuffer = buffer();
+      rec._liveDedupOverride = true;
+      liveView.rebuildLivePreview(rec);
+
+      // Expand, then select both occurrences (the heading itself is not
+      // selectable).
+      const group = rec._livePreview.querySelector(".log-preview-group");
+      group.querySelector(".dedup-toggle").click();
+      const items = rec._livePreview.querySelectorAll(".log-preview-group-item");
+      items.forEach(it => JSON.parse(it.dataset.selKeys).forEach(k => rec._selectedKeys.add(k)));
+      selection.refreshSelection(rec, rec._livePreview);
+      expect(Array.from(items).every(it => it.classList.contains("selected"))).toBe(true);
+
+      // Toggle grouping off — the selected entries are now flat rows.
+      rec._liveDedupOverride = false;
+      liveView.rebuildLivePreview(rec);
+      expect(rec._livePreview.querySelectorAll(".log-preview-line.selected").length).toBe(2);
+
+      // Toggle back on — the run is grouped and its occurrences still selected.
+      rec._liveDedupOverride = true;
+      liveView.rebuildLivePreview(rec);
+      const items2 = rec._livePreview.querySelectorAll(".log-preview-group-item");
+      expect(Array.from(items2).every(it => it.classList.contains("selected"))).toBe(true);
+    });
+
+    test("a selection survives pause and resume (item 8)", () => {
+      const rec = document.createElement("log-manager-card");
+      rec._livePreview = document.createElement("div");
+      rec._liveLevelFilter = { value: "ALL" };
+      rec._loggerFilterSelected = new Set();
+      rec._selectedKeys = new Set();
+      rec._expandedDedupKeys = new Set();
+      rec._recordingBuffer = buffer();
+      liveView.rebuildLivePreview(rec);
+
+      const group = rec._livePreview.querySelector(".log-preview-group");
+      group.querySelector(".dedup-toggle").click();
+      const items = rec._livePreview.querySelectorAll(".log-preview-group-item");
+      items.forEach(it => JSON.parse(it.dataset.selKeys).forEach(k => rec._selectedKeys.add(k)));
+      selection.refreshSelection(rec, rec._livePreview);
+
+      // Pausing/resuming replays rows through appendLiveEntries, which must not
+      // drop the explicit selection.
+      liveView.appendLiveEntries(rec, []);
+      const items2 = rec._livePreview.querySelectorAll(".log-preview-group-item");
+      expect(Array.from(items2).every(it => it.classList.contains("selected"))).toBe(true);
     });
   });
 
@@ -525,6 +668,238 @@ describe("LogManagerCard", () => {
     test("ALL applies no floor", () => {
       const card = document.createElement("log-manager-card");
       expect(liveView.entryMatchesFilter(card, { logger: "a.logger", level: "DEBUG", levelno: 10 }, "ALL", "")).toBe(true);
+    });
+  });
+
+  describe("searchable checkbox multi-select logger filter (REQ-CARD-080)", () => {
+    const stubPicker = (card) => {
+      card._recordingBuffer = [];
+      card._loggerFilterNames = new Set();
+      card._loggerFilterSelected = new Set();
+      card._loggerFilterRendered = null;
+      card._loggerFilterOpen = false;
+      card._hass = {
+        states: {
+          "select.a": { attributes: { logger_name: "a.logger", friendly_name: "A Logger" } },
+        },
+      };
+      card._loggerFilterBtn = document.createElement("button");
+      card._loggerFilterPanel = document.createElement("div");
+      card._loggerFilterSearch = document.createElement("input");
+      card._loggerFilterList = document.createElement("div");
+      card._livePreview = document.createElement("div");
+      card._liveLevelFilter = { value: "ALL" };
+      card._resultsShown = false;
+    };
+
+    test("accumulates the emitting loggers from the buffer", () => {
+      const card = document.createElement("log-manager-card");
+      stubPicker(card);
+      card._recordingBuffer = [
+        { logger: "custom_components.log_manager", level: "INFO" },
+        { logger: "custom_components.log_manager.select", level: "INFO" },
+        { logger: "custom_components.log_manager", level: "INFO" },
+      ];
+      liveView.accumulateLoggerFilterNames(card);
+      expect(liveView.loggerFilterNames(card)).toEqual([
+        "custom_components.log_manager",
+        "custom_components.log_manager.select",
+      ]);
+    });
+
+    test("first open ticks every accumulated logger", () => {
+      const card = document.createElement("log-manager-card");
+      stubPicker(card);
+      card._recordingBuffer = [{ logger: "a.logger" }, { logger: "b.logger" }];
+      liveView.openLoggerFilter(card);
+      expect(card._loggerFilterSelected.has("a.logger")).toBe(true);
+      expect(card._loggerFilterSelected.has("b.logger")).toBe(true);
+      const boxes = card._loggerFilterList.querySelectorAll("input[type='checkbox']");
+      expect(boxes.length).toBe(2);
+      expect(Array.from(boxes).every(cb => cb.checked)).toBe(true);
+    });
+
+    test("labels a known logger with its friendly name and escapes the value", () => {
+      const card = document.createElement("log-manager-card");
+      stubPicker(card);
+      card._recordingBuffer = [{ logger: 'we"ird' }, { logger: "a.logger" }];
+      liveView.openLoggerFilter(card);
+      const html = card._loggerFilterList.innerHTML;
+      expect(html).toContain("A Logger");
+      expect(html).toContain("we&quot;ird");
+    });
+
+    test("unticking a logger filters its entries out", () => {
+      const card = document.createElement("log-manager-card");
+      stubPicker(card);
+      const entry = { logger: "a.logger", level: "ERROR" };
+      expect(liveView.entryMatchesFilter(card, entry, "ALL", new Set(["a.logger"]))).toBe(true);
+      expect(liveView.entryMatchesFilter(card, entry, "ALL", new Set(["b.logger"]))).toBe(false);
+      // An empty set means all loggers are shown.
+      expect(liveView.entryMatchesFilter(card, entry, "ALL", new Set())).toBe(true);
+    });
+
+    test("a managed root that never logs directly no longer yields an empty list", () => {
+      const card = document.createElement("log-manager-card");
+      stubPicker(card);
+      // The managed root is what was selected, but only the child emits.
+      card._recordingBuffer = [
+        { logger: "custom_components.log_manager.select", level: "INFO" },
+      ];
+      liveView.openLoggerFilter(card);
+      const boxes = card._loggerFilterList.querySelectorAll("input[type='checkbox']");
+      expect(boxes.length).toBe(1);
+      expect(boxes[0].value).toBe("custom_components.log_manager.select");
+      expect(liveView.entryMatchesFilter(card, card._recordingBuffer[0], "ALL", card._loggerFilterSelected)).toBe(true);
+    });
+
+    test("while open it repaints only when the accumulated set grew", () => {
+      const card = document.createElement("log-manager-card");
+      stubPicker(card);
+      card._recordingBuffer = [{ logger: "a.logger" }];
+      liveView.openLoggerFilter(card);
+      expect(card._loggerFilterList.querySelectorAll("input").length).toBe(1);
+
+      // No new names: nothing is repainted (same node identity retained).
+      const firstInput = card._loggerFilterList.querySelector("input");
+      liveView.refreshLoggerFilterIfGrown(card);
+      expect(card._loggerFilterList.querySelector("input")).toBe(firstInput);
+
+      // A new name arrives: the list grows.
+      card._recordingBuffer.push({ logger: "b.logger" });
+      liveView.accumulateLoggerFilterNames(card);
+      liveView.refreshLoggerFilterIfGrown(card);
+      expect(card._loggerFilterList.querySelectorAll("input").length).toBe(2);
+    });
+
+    test("while closed it only accumulates, never rendering", () => {
+      const card = document.createElement("log-manager-card");
+      stubPicker(card);
+      card._loggerFilterOpen = false;
+      card._recordingBuffer = [{ logger: "a.logger" }, { logger: "b.logger" }];
+      liveView.accumulateLoggerFilterNames(card);
+      liveView.refreshLoggerFilterIfGrown(card);
+      expect(card._loggerFilterList.querySelectorAll("input").length).toBe(0);
+      expect(liveView.loggerFilterNames(card).length).toBe(2);
+    });
+
+    test("the ticked set is remembered across a close and reopen", () => {
+      const card = document.createElement("log-manager-card");
+      stubPicker(card);
+      card._recordingBuffer = [{ logger: "a.logger" }, { logger: "b.logger" }];
+      liveView.openLoggerFilter(card);
+      // Untick b.logger, then close and reopen.
+      card._loggerFilterSelected.delete("b.logger");
+      liveView.closeLoggerFilter(card);
+      card._recordingBuffer.push({ logger: "c.logger" });
+      liveView.accumulateLoggerFilterNames(card);
+      liveView.openLoggerFilter(card);
+      expect(card._loggerFilterSelected.has("a.logger")).toBe(true);
+      expect(card._loggerFilterSelected.has("b.logger")).toBe(false);
+      // A logger first seen after close is auto-ticked by accumulation. b.logger
+      // was already listed when unticked, so it is never "new" again.
+      expect(card._loggerFilterSelected.has("c.logger")).toBe(true);
+    });
+
+    test("a first-seen logger is auto-ticked by accumulation", () => {
+      const card = document.createElement("log-manager-card");
+      stubPicker(card);
+      card._recordingBuffer = [{ logger: "a.logger" }];
+      liveView.accumulateLoggerFilterNames(card);
+      expect(card._loggerFilterSelected.has("a.logger")).toBe(true);
+    });
+
+    test("the filter button counts ticked listed loggers, not a badge-seeded name", () => {
+      const card = document.createElement("log-manager-card");
+      stubPicker(card);
+      card._loggerFilterNames = new Set(["a.logger"]);
+      // A badge-seeded logger that never emitted is ticked but not listed.
+      card._loggerFilterSelected = new Set(["initial.logger", "a.logger"]);
+      liveView.updateLoggerFilterButton(card);
+      // The listed subset is fully ticked: "All loggers", not "2 loggers".
+      expect(card._loggerFilterBtn.textContent).toBe("All loggers");
+    });
+
+    test("search hides non-matching loggers without changing ticked state", () => {
+      const card = document.createElement("log-manager-card");
+      stubPicker(card);
+      card._recordingBuffer = [{ logger: "a.logger" }, { logger: "b.logger" }];
+      liveView.openLoggerFilter(card);
+      card._loggerFilterSearch.value = "a.logger";
+      liveView.renderLoggerFilterCheckboxes(card);
+      const items = card._loggerFilterList.querySelectorAll(".logger-filter-item");
+      const visible = Array.from(items).filter(el => el.style.display !== "none");
+      expect(visible.length).toBe(1);
+      expect(visible[0].querySelector("input").value).toBe("a.logger");
+      // Both remain ticked; only visibility changed.
+      expect(card._loggerFilterSelected.size).toBe(2);
+    });
+  });
+
+  describe("reopen rebuild and pause styling", () => {
+    const stubLiveChrome = (rec) => {
+      rec._recordingState = "results"; // pollRecordingEntries no-ops
+      rec._recordingBuffer = [];
+      rec._livePreview = document.createElement("div");
+      rec._liveLevelFilter = { value: "ALL" };
+      rec._loggerFilterSelected = new Set();
+      rec._loggerFilterNames = new Set();
+      rec._loggerFilterRendered = null;
+      rec._loggerFilterOpen = false;
+      rec._liveLastGroup = null;
+      rec._liveLastSingle = null;
+      rec._expandedDedupKeys = new Set();
+      rec._recordingDedupToggle = document.createElement("input");
+      rec._liveDialogTitle = { textContent: "" };
+      rec._liveStatusText = { parentElement: { style: {} }, textContent: "" };
+      rec._livePauseBtn = { style: {}, textContent: "", title: "", classList: { add() {}, remove() {}, toggle() {} } };
+      rec._liveStopBtn = { style: {} };
+      rec._liveCloseBtn = { style: {}, textContent: "", title: "" };
+      rec._liveClearBtn = { style: {} };
+      rec._liveDiscardBtn = { style: {} };
+      rec._liveTimer = { textContent: "" };
+      rec._liveStatusDot = { style: {} };
+      rec._liveSummary = { textContent: "" };
+      rec._liveSavePlainBtn = { disabled: false, title: "" };
+      rec._liveSaveJsonlBtn = { disabled: false, title: "" };
+      rec._liveCopyBtn = { disabled: false, title: "", textContent: "" };
+      rec._recordingLiveDialog = { style: {}, classList: { add() {}, remove() {} } };
+      rec._recordingLoggers = [];
+      rec._hass = { states: {}, connection: { sendMessagePromise: jest.fn() } };
+    };
+
+    test("reopening the live view rebuilds the preview from the buffer (item 8)", () => {
+      const rec = document.createElement("log-manager-card");
+      stubLiveChrome(rec);
+      rec._recordingBuffer = [
+        { id: 0, timestamp: 1700000000, logger: "a.logger", level: "ERROR", message: "boom", source: "m.py" },
+        { id: 1, timestamp: 1700000001, logger: "b.logger", level: "INFO", message: "other", source: "m.py" },
+      ];
+      const rafSpy = jest.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => { cb(); return 0; });
+      try {
+        liveView.openLiveView(rec);
+      } finally {
+        liveView.cleanupLivePolling(rec);
+        rafSpy.mockRestore();
+      }
+      // Both captured entries appear immediately on open.
+      expect(rec._livePreview.querySelectorAll(".log-preview-line").length).toBe(2);
+    });
+
+    test("the pause button is green while running and orange when paused (item 9)", () => {
+      expect(cardStylesSource).toMatch(/#live-pause-btn\s*\{[^}]*color:\s*#4caf50/);
+      const paused = cardStylesSource.match(/#live-pause-btn\.paused\s*\{([^}]*)\}/);
+      expect(paused).not.toBeNull();
+      // The paused state is orange, matching the paused status it signals.
+      expect(paused[1]).toContain("#ff9800");
+    });
+
+    test("the summary and status text are not selectable", () => {
+      const rule = cardStylesSource.match(
+        /#live-summary,\s*#live-status-text,\s*#results-summary\s*\{([^}]*)\}/
+      );
+      expect(rule).not.toBeNull();
+      expect(rule[1]).toContain("user-select: none");
     });
   });
 });

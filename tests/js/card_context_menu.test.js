@@ -1,5 +1,5 @@
 import { jest } from "@jest/globals";
-import { setupCard, contextMenu, selection } from "./setup.js";
+import { setupCard, contextMenu, selection, loggers } from "./setup.js";
 
 // Module-direct tests for card-context-menu.js. The element supplies counters,
 // selection state and the menu container; the concern functions own behaviour.
@@ -156,6 +156,121 @@ describe("card-context-menu", () => {
 
       const labels = Array.from(rec._contextMenu.querySelectorAll("button")).map(b => b.textContent);
       expect(labels).toContain("Copy logger path");
+    });
+
+    test("the results summary offers a themed Copy summary", () => {
+      const rec = document.createElement("log-manager-card");
+      rec._contextMenu = document.createElement("div");
+      rec._hass = { states: {}, callService: jest.fn() };
+      const summary = document.createElement("div");
+      summary.id = "results-summary";
+      summary.textContent = "ERROR 2 · a.logger ×3";
+      const items = contextMenu.summaryMenuItems(rec, summary);
+      expect(items.map(i => i.label)).toEqual(["Copy summary"]);
+      expect(items[0].disabled).toBe(false);
+      // The action copies the element's own text.
+      const originalClipboard = navigator.clipboard;
+      navigator.clipboard = { writeText: jest.fn(() => Promise.resolve()) };
+      try {
+        items[0].action();
+        expect(navigator.clipboard.writeText).toHaveBeenCalledWith("ERROR 2 · a.logger ×3");
+      } finally {
+        navigator.clipboard = originalClipboard;
+      }
+    });
+
+    test("a failed copy surfaces a visible fallback", async () => {
+      const rec = document.createElement("log-manager-card");
+      rec._hass = { states: {}, callService: jest.fn() };
+      const fallbackSpy = jest.spyOn(loggers, "showDeleteConfirm").mockImplementation(() => {});
+      navigator.clipboard = { writeText: jest.fn(() => Promise.reject(new Error("nope"))) };
+      try {
+        contextMenu.copyTextWithFallback(rec, "text");
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(fallbackSpy).toHaveBeenCalled();
+      } finally {
+        navigator.clipboard = undefined;
+        fallbackSpy.mockRestore();
+      }
+    });
+
+    test("group headers get their own themed menu", () => {
+      const rec = document.createElement("log-manager-card");
+      rec._contextMenu = document.createElement("div");
+      rec._hass = { states: {}, callService: jest.fn() };
+      rec._activeList = document.createElement("div");
+      const header = document.createElement("div");
+      header.className = "log-group-header";
+      header.dataset.group = "custom_components";
+      rec._activeList.appendChild(header);
+      const preventDefault = jest.fn();
+
+      contextMenu.handleListContextMenu(rec, {
+        target: header, clientX: 0, clientY: 0, preventDefault,
+      });
+
+      expect(preventDefault).toHaveBeenCalled();
+      const labels = Array.from(rec._contextMenu.querySelectorAll("button")).map(b => b.textContent);
+      expect(labels).toContain("Copy path prefix");
+      expect(labels).toContain("Collapse or expand section");
+    });
+  });
+
+  describe("live dialog context menu (item 5)", () => {
+    const build = () => {
+      const rec = document.createElement("log-manager-card");
+      rec._contextMenu = document.createElement("div");
+      rec._hass = { states: {}, callService: jest.fn() };
+      rec._recordingBuffer = [];
+      const dialog = document.createElement("div");
+      dialog.id = "recording-live-dialog";
+      const input = document.createElement("input");
+      const plain = document.createElement("div");
+      plain.textContent = "plain";
+      const preview = document.createElement("div");
+      preview.className = "log-preview";
+      const summary = document.createElement("div");
+      summary.id = "results-summary";
+      summary.textContent = "ERROR 2 · a.logger ×3";
+      dialog.append(input, plain, preview, summary);
+      rec._recordingLiveDialog = dialog;
+      rec._livePreview = preview;
+      rec._activeList = document.createElement("div");
+      rec._loggerChecklist = document.createElement("div");
+      rec._historyTableBody = document.createElement("div");
+      contextMenu.attachContextMenu(rec);
+      return { rec, input, plain, preview, summary };
+    };
+
+    test("keeps the native menu on text-entry controls", () => {
+      const { input } = build();
+      const ev = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+      input.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(false);
+    });
+
+    test("suppresses the native menu elsewhere in the dialog with no themed menu", () => {
+      const { rec, plain } = build();
+      const ev = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+      plain.dispatchEvent(ev);
+      expect(ev.defaultPrevented).toBe(true);
+      expect(rec._contextMenu.style.display).not.toBe("block");
+    });
+
+    test("the entry table keeps its themed preview menu", () => {
+      const { rec, preview } = build();
+      preview.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+      const labels = Array.from(rec._contextMenu.querySelectorAll("button")).map(b => b.textContent);
+      expect(labels.some(l => l.includes("Save as .log"))).toBe(true);
+    });
+
+    test("the results summary offers a themed Copy summary", () => {
+      const { rec, summary } = build();
+      summary.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+      const labels = Array.from(rec._contextMenu.querySelectorAll("button")).map(b => b.textContent);
+      expect(labels).toContain("Copy summary");
+      expect(labels).not.toContain("Select all");
     });
   });
 });

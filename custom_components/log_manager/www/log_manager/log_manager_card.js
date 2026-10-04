@@ -36,6 +36,7 @@ let __cardRecordingSessionModule = null;
 let __cardLiveViewModule = null;
 let __cardResultsModule = null;
 let __cardContextMenuModule = null;
+let __cardUiModule = null;
 
 // Kick off sibling loads eagerly. The dynamic imports start resolving at module
 // scope, but nothing is awaited here, so the module body completes synchronously
@@ -84,6 +85,10 @@ const __cardModulesReady = Promise.all([
   }),
   loadSibling("./card-context-menu.js").then((mod) => {
     __cardContextMenuModule = mod;
+    return mod;
+  }),
+  loadSibling("./card-ui.js").then((mod) => {
+    __cardUiModule = mod;
     return mod;
   }),
 ]);
@@ -154,6 +159,11 @@ function contextMenuModule() {
   return __cardContextMenuModule;
 }
 
+// Shared presentation helpers (tinting, confirm dialog) live in card-ui.js.
+function uiModule() {
+  return __cardUiModule;
+}
+
 class LogManagerCard extends HTMLElement {
   // Audit-trail display policy. Backend keeps AUDIT_KEEP entries per logger
   // (see MAX_AUDIT in const.py); the panel shows the newest AUDIT_SHOW.
@@ -211,6 +221,16 @@ class LogManagerCard extends HTMLElement {
     // Plain dedup keys: two distant runs of the same message share one
     // expansion flag, so expanding one expands both after a rebuild.
     this._expandedDedupKeys = new Set();
+    // Logger filter (live/results) is a searchable checkbox multi-select.
+    // `_loggerFilterNames` accumulates logger names seen in the buffer while
+    // the picker is closed; `_loggerFilterSelected` holds the ticked names and
+    // survives rebuilds and reopen (the DOM-held checklist is not the model);
+    // `_loggerFilterRendered` is the sorted snapshot last painted, used to
+    // detect growth while open; `_loggerFilterOpen` gates rendering.
+    this._loggerFilterNames = new Set();
+    this._loggerFilterSelected = new Set();
+    this._loggerFilterRendered = null;
+    this._loggerFilterOpen = false;
     this._resultsShown = false;
     this._liveDedupOverride = null;
     // Sibling modules load asynchronously, so the constructor cannot call into
@@ -297,7 +317,6 @@ class LogManagerCard extends HTMLElement {
 
     this._activeList = this.shadowRoot.getElementById("active-list");
     this._setAllLevel = this.shadowRoot.getElementById("set-all-level");
-    this._setAllApply = this.shadowRoot.getElementById("set-all-apply");
     this._pathInput = this.shadowRoot.getElementById("path-input");
     this._optionsList = this.shadowRoot.getElementById("options-list");
     this._friendlyNameInput = this.shadowRoot.getElementById("friendly-name-input");
@@ -307,6 +326,7 @@ class LogManagerCard extends HTMLElement {
     this._toggleText = this.shadowRoot.getElementById("toggle-text");
     this._addSectionWrapper = this.shadowRoot.getElementById("add-section-wrapper");
     this._deleteDialog = this.shadowRoot.getElementById("delete-dialog");
+    this._confirmDialog = this.shadowRoot.getElementById("confirm-dialog");
     this._recordBtn = this.shadowRoot.getElementById("record-btn");
     this._recordIcon = this.shadowRoot.getElementById("record-icon");
     this._recordText = this.shadowRoot.getElementById("record-text");
@@ -320,6 +340,7 @@ class LogManagerCard extends HTMLElement {
     this._profileSelect = this.shadowRoot.getElementById("recording-profile-select");
     this._profileRow = this.shadowRoot.getElementById("recording-profile-row");
     this._profileSaveBtn = this.shadowRoot.getElementById("recording-profile-save");
+    this._profileSaveNewBtn = this.shadowRoot.getElementById("recording-profile-save-new");
     this._profileDeleteBtn = this.shadowRoot.getElementById("recording-profile-delete");
     this._profileSaveRow = this.shadowRoot.getElementById("recording-profile-save-row");
     this._profileNameInput = this.shadowRoot.getElementById("recording-profile-name");
@@ -331,7 +352,10 @@ class LogManagerCard extends HTMLElement {
     this._liveStatusDot = this.shadowRoot.getElementById("live-status-dot");
     this._livePauseBtn = this.shadowRoot.getElementById("live-pause-btn");
     this._liveStopBtn = this.shadowRoot.getElementById("live-stop-btn");
-    this._liveLoggerFilter = this.shadowRoot.getElementById("live-logger-filter");
+    this._loggerFilterBtn = this.shadowRoot.getElementById("logger-filter-btn");
+    this._loggerFilterPanel = this.shadowRoot.getElementById("logger-filter-panel");
+    this._loggerFilterSearch = this.shadowRoot.getElementById("logger-filter-search");
+    this._loggerFilterList = this.shadowRoot.getElementById("logger-filter-list");
     this._liveLevelFilter = this.shadowRoot.getElementById("live-level-filter");
     this._livePreview = this.shadowRoot.getElementById("live-log-preview");
     this._liveSummary = this.shadowRoot.getElementById("live-summary");
@@ -413,6 +437,21 @@ class LogManagerCard extends HTMLElement {
     // Explicit row-selection model for the logger panel and the live/results views.
     selectionModule().attachSelection(this);
 
+    // Ctrl/Cmd+C copies the selected entries when a selection resolves to the
+    // recording buffer; otherwise the browser's native copy runs. Text-entry
+    // controls keep native copy.
+    this.shadowRoot.addEventListener("keydown", (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "c") return;
+      const active = this.shadowRoot.activeElement;
+      const tag = active && active.tagName ? active.tagName.toLowerCase() : "";
+      if (tag === "input" || tag === "textarea" || tag === "select") return;
+      if (this._selectedKeys && this._selectedKeys.size > 0 &&
+          resultsModule().selectedBufferKeys(this).length > 0) {
+        e.preventDefault();
+        resultsModule().copyLogsToClipboard(this);
+      }
+    });
+
     // ESC key closes any open dialog.
     this.shadowRoot.addEventListener("keydown", (e) => {
       if (e.key !== "Escape") return;
@@ -423,6 +462,10 @@ class LogManagerCard extends HTMLElement {
       if (this._deleteDialog.style.display === "flex") {
         this._deleteDialog.style.display = "none";
         this._deleteConfirmTarget = null;
+      } else if (this._confirmDialog && this._confirmDialog.style.display === "flex") {
+        // Route ESC through the confirm's cancel path so onCancel runs
+        // (Set-all revert, raise-sequence restore).
+        uiModule().dismissConfirm(this);
       } else if (this._historyDialog.style.display === "flex") {
         this._historyDialog.classList.remove("visible");
         this._historyDialog.style.display = "none";
@@ -433,10 +476,6 @@ class LogManagerCard extends HTMLElement {
         resultsModule().closeLiveView(this);
       }
     });
-  }
-
-  _locale() {
-    return (this._hass && this._hass.locale && this._hass.locale.language) || undefined;
   }
 
   setConfig(config) {

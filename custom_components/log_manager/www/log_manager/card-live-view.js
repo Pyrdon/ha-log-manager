@@ -1,5 +1,6 @@
 import { concern, registerConcern } from "./card-core.js";
 import { utils } from "./card-utils.js";
+import { ui } from "./card-ui.js";
 
 // Late-bound cross-module seam: `card-core.js` holds the registry.
 const loggers = concern("loggers");
@@ -11,11 +12,144 @@ const selection = concern("selection");
 // Extracted from the entry card; functions take the card instance and
 // preserve its `this`-state and existing method names.
 
+// Shared tooltip for a grouped-runs heading. Exposed on the `liveView` API
+// object so the results view renders the same string.
+export const DEDUP_GROUP_TITLE = "Identical entries grouped; click to expand.";
+
 export function cleanupLivePolling(card) {
   if (card._livePollInterval) {
     clearInterval(card._livePollInterval);
     card._livePollInterval = null;
   }
+}
+
+// Logger filter is a searchable checkbox multi-select over the logger names
+// present in the recording buffer. The card-held state (not the DOM-held
+// checklist) is the model:
+//   _loggerFilterNames    — every name seen in the buffer while the picker was
+//                           closed, accumulated across polls.
+//   _loggerFilterSelected — ticked names; the active filter selection.
+//   _loggerFilterRendered — sorted snapshot last painted, for growth detection.
+//   _loggerFilterOpen     — picker visibility gate.
+// Rendering is visibility-gated: closed pickers only accumulate names; opening
+// paints once from the sorted accumulated set; while open a repaint happens only
+// when the accumulated set grew — never incremental appends.
+
+// Accumulate the logger names present in the recording buffer. Cheap and
+// DOM-free: safe to call on every poll while the picker is closed. A logger
+// seen for the first time is ticked by default; a logger the user unticked has
+// already been listed, so it is never "new" again and stays unticked. The
+// ticked set is reconciled to the listed set so a badge-seeded logger that
+// never emitted cannot hide every entry.
+export function accumulateLoggerFilterNames(card) {
+  if (!card._loggerFilterNames) card._loggerFilterNames = new Set();
+  const selected = card._loggerFilterSelected || (card._loggerFilterSelected = new Set());
+  let grew = false;
+  (card._recordingBuffer || []).forEach(entry => {
+    if (!entry || !entry.logger) return;
+    if (!card._loggerFilterNames.has(entry.logger)) {
+      card._loggerFilterNames.add(entry.logger);
+      selected.add(entry.logger);
+      grew = true;
+    }
+  });
+  // Reconcile: drop ticked names that are not in the listed set.
+  selected.forEach(name => {
+    if (!card._loggerFilterNames.has(name)) selected.delete(name);
+  });
+  if (grew) updateLoggerFilterButton(card);
+  return card._loggerFilterNames;
+}
+
+// Sorted snapshot of the accumulated names.
+export function loggerFilterNames(card) {
+  return Array.from(card._loggerFilterNames || []).sort((a, b) =>
+    a.localeCompare(b, undefined, { sensitivity: "base" })
+  );
+}
+
+// Friendly label for a logger name, using the entity when it is known.
+export function loggerFilterLabel(card, name) {
+  const states = (card._hass && card._hass.states) || {};
+  const stateObj = Object.values(states).find(
+    s => s.attributes && s.attributes.logger_name === name
+  );
+  return stateObj ? (stateObj.attributes.friendly_name || name) : name;
+}
+
+// Paint the picker's checkbox list from the accumulated sorted set. Names are
+// already ticked by accumulation when they enter the picker; the remembered
+// selection is kept. Only called when the picker is open and the set has grown.
+export function renderLoggerFilterCheckboxes(card) {
+  const list = card._loggerFilterList;
+  if (!list) return;
+  const names = loggerFilterNames(card);
+  const selected = card._loggerFilterSelected;
+  const query = (card._loggerFilterSearch && card._loggerFilterSearch.value || "").toLowerCase();
+  list.innerHTML = names.map(name => {
+    const checked = selected.has(name) ? " checked" : "";
+    const label = loggerFilterLabel(card, name);
+    const matches = !query || name.toLowerCase().includes(query) || label.toLowerCase().includes(query);
+    return `<label class="logger-filter-item" style="display: ${matches ? "flex" : "none"};">
+      <input type="checkbox" value="${utils.escapeAttr(name)}"${checked}>
+      <span title="${utils.escapeAttr(name)}">${utils.escapeHtml(label)}</span>
+    </label>`;
+  }).join("");
+  list.querySelectorAll("input[type='checkbox']").forEach(cb => {
+    cb.addEventListener("change", () => {
+      if (cb.checked) selected.add(cb.value);
+      else selected.delete(cb.value);
+      updateLoggerFilterButton(card);
+      applyLiveFilters(card);
+    });
+  });
+  card._loggerFilterRendered = names.slice();
+  updateLoggerFilterButton(card);
+}
+
+// The picker's closed state shows how many of the listed loggers are ticked.
+export function updateLoggerFilterButton(card) {
+  const btn = card._loggerFilterBtn;
+  if (!btn) return;
+  const names = card._loggerFilterNames || new Set();
+  const selected = card._loggerFilterSelected || new Set();
+  const total = names.size;
+  const ticked = Array.from(names).filter(name => selected.has(name)).length;
+  const label = (ticked === total || selected.size === 0)
+    ? "All loggers"
+    : `${ticked} logger${ticked === 1 ? "" : "s"}`;
+  if (btn.textContent !== label) btn.textContent = label;
+}
+
+// Open the picker: paint once from the accumulated set, then re-render only on
+// growth. Closing keeps the remembered selection.
+export function openLoggerFilter(card) {
+  card._loggerFilterOpen = true;
+  accumulateLoggerFilterNames(card);
+  renderLoggerFilterCheckboxes(card);
+  if (card._loggerFilterPanel) card._loggerFilterPanel.style.display = "block";
+  if (card._loggerFilterBtn) card._loggerFilterBtn.setAttribute("aria-expanded", "true");
+}
+
+export function closeLoggerFilter(card) {
+  card._loggerFilterOpen = false;
+  if (card._loggerFilterPanel) card._loggerFilterPanel.style.display = "none";
+  if (card._loggerFilterBtn) card._loggerFilterBtn.setAttribute("aria-expanded", "false");
+}
+
+// While open, repaint only when new logger names arrived since the last paint.
+export function refreshLoggerFilterIfGrown(card) {
+  if (!card._loggerFilterOpen) return;
+  const current = loggerFilterNames(card);
+  const rendered = card._loggerFilterRendered || [];
+  if (current.length !== rendered.length) {
+    renderLoggerFilterCheckboxes(card);
+  }
+}
+
+export function toggleLoggerFilter(card) {
+  if (card._loggerFilterOpen) closeLoggerFilter(card);
+  else openLoggerFilter(card);
 }
 
 export function openLiveView(card, initialLogger) {
@@ -29,21 +163,16 @@ export function openLiveView(card, initialLogger) {
 
     // Preserve the previous filter selection unless a specific logger was
     // requested (e.g. from the recording-count badge).
-    const prevLoggerFilter = card._liveLoggerFilter.value;
-    const prevLevelFilter = card._liveLevelFilter.value;
+    const prevLevelFilter = card._liveLevelFilter ? card._liveLevelFilter.value : "ALL";
 
-    // Build logger filter dropdown.
-    let filterHtml = '<option value="">All loggers</option>';
-    card._recordingLoggers.forEach(name => {
-      const stateObj = Object.values(card._hass.states).find(
-        s => s.attributes.logger_name === name
-      );
-      const label = stateObj ? (stateObj.attributes.friendly_name || name) : name;
-      filterHtml += `<option value="${utils.escapeAttr(name)}">${utils.escapeHtml(label)}</option>`;
-    });
-    card._liveLoggerFilter.innerHTML = filterHtml;
-    card._liveLoggerFilter.value = initialLogger || prevLoggerFilter;
-    card._liveLevelFilter.value = initialLogger ? "ALL" : prevLevelFilter;
+    // Accumulate names from the buffer and (re)render the picker lazily.
+    accumulateLoggerFilterNames(card);
+    if (initialLogger) {
+      // A specific logger was requested: tick only it.
+      card._loggerFilterSelected = new Set([initialLogger]);
+    }
+    if (card._loggerFilterOpen) refreshLoggerFilterIfGrown(card);
+    if (card._liveLevelFilter) card._liveLevelFilter.value = initialLogger ? "ALL" : prevLevelFilter;
 
     // Show top bar with live controls.
     card._liveStatusText.parentElement.style.display = "flex";
@@ -60,10 +189,11 @@ export function openLiveView(card, initialLogger) {
 
     updateLiveTimer(card);
 
-    if (initialLogger) {
-      applyLiveFilters(card);
-      card._livePreview.scrollTop = 0;
-    }
+    // Rebuild the preview on every open so captured entries appear immediately,
+    // derived from the buffer with the current ticked logger set (the DOM is
+    // cleared when the dialog closes). A specific-logger open scrolls to top.
+    applyLiveFilters(card);
+    if (initialLogger) card._livePreview.scrollTop = 0;
     liveView.updateLiveSummary(card);
 
     card._recordingLiveDialog.style.display = "flex";
@@ -97,6 +227,10 @@ export function pollRecordingEntries(card) {
       for (const entry of entries) {
         card._recordingBuffer.push(entry);
       }
+      // The picker accumulates names even while closed; if open it repaints
+      // only when the accumulated set grew.
+      accumulateLoggerFilterNames(card);
+      refreshLoggerFilterIfGrown(card);
 
       card._liveLastId = res.next_id || 0;
       // While paused the summary (entry count, buffer fill) stays live but the
@@ -172,26 +306,35 @@ export function isDedupEnabled(card) {
     return !card.config || card.config.live_dedup !== false;
   }
 
+// Pure: the 1-based id span a grouped run covers. A run of one shows a single
+// id; a longer run shows `first–last` so the heading states the whole range.
+export function dedupIdRangeText(run) {
+    const ids = (run.ids && run.ids.length) ? run.ids : [run.firstId];
+    const first = ids[0] + 1;
+    const last = ids[ids.length - 1] + 1;
+    return first === last ? `${first}` : `${first}\u2013${last}`;
+  }
+
 export function dedupRowInnerHtml(card, run, colors) {
     const logger = loggers.loggerCellHtml(card, run.logger);
     const msg = utils.escapeHtml(run.message);
     const chevron = card._expandedDedupKeys.has(run.key) ? "\u25BE" : "\u25B8";
-    return `<span class="log-preview-col idx-col"><button type="button" class="dedup-toggle" title="Expand or collapse this group">${chevron}</button><span class="dedup-count">×${run.count}</span><span class="dedup-first-id">#${run.firstId + 1}</span></span>
+    return `<span class="log-preview-col idx-col"><button type="button" class="dedup-toggle" title="Expand or collapse this group">${chevron}</button><span class="dedup-count">×${run.count}</span><span class="dedup-first-id">${dedupIdRangeText(run)}</span></span>
       <span class="log-preview-col level-col" style="color: ${colors.color};">${utils.escapeHtml(run.level)}</span>
-      <span class="log-preview-col time-col">${utils.dedupRangeText(run.firstTs, run.lastTs, card._locale())}</span>
+      <span class="log-preview-col time-col">${utils.dedupRangeText(run.firstTs, run.lastTs, card._hass)}</span>
       <span class="log-preview-col logger-col" title="${utils.escapeAttr(run.logger)}">${logger}</span>
       <span class="log-preview-col msg-col">${msg}</span>`;
   }
 
-export function dedupItemsInnerHtml(card, run) {
+export function dedupItemsInnerHtml(card, run, opts = {}) {
     const colors = utils.levelColors(run.level);
     const logger = loggers.loggerCellHtml(card, run.logger);
     const msg = utils.escapeHtml(run.message);
     const keys = selection.runKeys(card, run);
-    return run.times.map((ts, i) => {
-      const time = new Date(ts * 1000).toLocaleTimeString(
-        card._locale(), { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }
-      );
+    const idxs = opts.onlyLast ? [run.times.length - 1] : run.times.map((_, i) => i);
+    return idxs.map(i => {
+      const ts = run.times[i];
+      const time = utils.formatClockTime(ts, card._hass);
       const id = run.ids && run.ids[i] != null ? run.ids[i] + 1 : "";
       return `<div class="log-preview-group-item selectable-entry" data-sel-keys="${utils.escapeAttr(JSON.stringify(keys[i] ? [keys[i]] : []))}" draggable="false" style="background: ${colors.rowBg}; border-left: 2px solid ${colors.color}; margin-left: 24px;">
         <span class="log-preview-col idx-col">${id}</span>
@@ -217,16 +360,14 @@ export function wireDedupToggle(card, row, items, key) {
         card._expandedDedupKeys.delete(key);
       }
     };
+    // The whole heading is a toggle (it is not selectable). The chevron button
+    // and the count badge stop propagation so they toggle exactly once; a
+    // click elsewhere in the heading bubbles to the row listener.
     btn.addEventListener("click", (e) => { e.stopPropagation(); toggle(); });
-    // The row and its badges are re-wired after in-place updates, so guard the
-    // row-level double-click against accumulating duplicate listeners.
-    if (!row.dataset.dedupDblclick) {
-      row.dataset.dedupDblclick = "true";
-      row.addEventListener("dblclick", (e) => { e.stopPropagation(); toggle(); });
-    }
     row.querySelectorAll(".dedup-count").forEach(badge => {
       badge.addEventListener("click", (e) => { e.stopPropagation(); toggle(); });
     });
+    row.addEventListener("click", () => toggle());
   }
 
 export function startDedupGroup(card, container, firstEntry, secondEntry) {
@@ -245,7 +386,9 @@ export function startDedupGroup(card, container, firstEntry, secondEntry) {
     };
     const colors = utils.levelColors(run.level);
     const row = document.createElement("div");
-    row.className = "log-preview-group selectable-entry";
+    // The heading is a toggle, not a selectable entry: its occurrences remain
+    // individually selectable (REQ-CARD-093).
+    row.className = "log-preview-group";
     row.draggable = false;
     row.dataset.selKeys = JSON.stringify(selection.runKeys(card, run));
     row.dataset.logger = run.logger;
@@ -255,7 +398,7 @@ export function startDedupGroup(card, container, firstEntry, secondEntry) {
     row.dataset.count = String(run.count);
     row.dataset.ids = run.ids.join(",");
     row.style.background = colors.rowBg;
-    row.title = "Identical entries grouped — expand to see each occurrence";
+    row.title = DEDUP_GROUP_TITLE;
     row.innerHTML = dedupRowInnerHtml(card, run, colors);
     const items = document.createElement("div");
     items.className = "log-preview-group-items";
@@ -273,22 +416,27 @@ export function bumpDedupGroup(card, group, entry) {
     run.lastTs = entry.timestamp;
     run.ids.push(entry.id);
     run.times.push(entry.timestamp);
-    const colors = utils.levelColors(run.level);
     group.row.dataset.count = String(run.count);
     group.row.dataset.ids = run.ids.join(",");
     group.row.dataset.selKeys = JSON.stringify(selection.runKeys(card, run));
-    group.row.innerHTML = dedupRowInnerHtml(card, run, colors);
-    // innerHTML replaced the toggle button, so re-wire it and keep state.
-    wireDedupToggle(card, group.row, group.items, run.key);
-    group.items.innerHTML = dedupItemsInnerHtml(card, run);
-    group.items.style.display = card._expandedDedupKeys.has(run.key) ? "" : "none";
+    // In-place count + time-range + chevron update; do not rebuild the row, so
+    // the wired toggle listeners and `_expandedDedupKeys` state survive.
+    const badge = group.row.querySelector(".dedup-count");
+    if (badge) badge.textContent = `\u00D7${run.count}`;
+    const idEl = group.row.querySelector(".dedup-first-id");
+    if (idEl) idEl.textContent = dedupIdRangeText(run);
+    const timeCol = group.row.querySelector(".time-col");
+    if (timeCol) timeCol.textContent = utils.dedupRangeText(run.firstTs, run.lastTs, card._hass);
+    // Append only the new occurrence as a child; existing children keep their
+    // DOM and selection classes.
+    group.items.insertAdjacentHTML("beforeend", dedupItemsInnerHtml(card, run, { onlyLast: true }));
+    // A growing `data-sel-keys` list means the group row's own selected state
+    // can change, and the new child needs its selected class derived.
     selection.refreshSelection(card, group.row.parentElement || card._livePreview);
   }
 
 export function appendFlatEntry(card, container, entry) {
-    const time = new Date(entry.timestamp * 1000).toLocaleTimeString(
-      card._locale(), { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }
-    );
+    const time = utils.formatClockTime(entry.timestamp, card._hass);
     const level = entry.level;
     const colors = utils.levelColors(level);
     const logger = loggers.loggerCellHtml(card, entry.logger);
@@ -337,7 +485,8 @@ export function rebuildLivePreview(card) {
     const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 20;
     const prevTop = container.scrollTop;
     const levelFilter = card._liveLevelFilter.value;
-    const loggerFilter = card._liveLoggerFilter.value;
+    const loggerFilter = card._loggerFilterSelected;
+    accumulateLoggerFilterNames(card);
     container.innerHTML = "";
     ensurePreviewHeader(card);
     card._liveLastGroup = null;
@@ -353,6 +502,7 @@ export function rebuildLivePreview(card) {
         div.style.display = entryMatchesFilter(card, entry, levelFilter, loggerFilter) ? "" : "none";
       }
     }
+    refreshLoggerFilterIfGrown(card);
     selection.refreshSelection(card, container);
     if (atBottom) {
       container.scrollTop = container.scrollHeight;
@@ -375,8 +525,11 @@ export function appendLiveEntries(card, entries) {
     const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 20;
 
     const levelFilter = card._liveLevelFilter.value;
-    const loggerFilter = card._liveLoggerFilter.value;
+    const loggerFilter = card._loggerFilterSelected;
     const dedup = isDedupEnabled(card);
+
+    // Accumulate the logger names seen in this batch.
+    accumulateLoggerFilterNames(card);
 
     for (const entry of entries) {
       if (dedup) {
@@ -476,10 +629,15 @@ export function ensurePreviewHeader(card) {
     wireColumnResize(card);
   }
 
-export function entryMatchesFilter(card, entry, levelFilter, loggerFilter) {
-    // Exact match only: selecting a logger must not also show its children's
-    // entries. Child loggers are reachable via "All loggers".
-    if (loggerFilter && entry.logger !== loggerFilter) {
+export function entryMatchesFilter(card, entry, levelFilter, loggerSelected) {
+    // `loggerSelected` is the ticked-name Set. An entry shows when its logger
+    // name is in the set; ticking one logger never implies its children.
+    if (loggerSelected instanceof Set) {
+      if (loggerSelected.size > 0 && !loggerSelected.has(entry.logger)) {
+        return false;
+      }
+    } else if (loggerSelected && entry.logger !== loggerSelected) {
+      // Tolerate a single-name string for callers/tests that pass one.
       return false;
     }
     if (levelFilter && levelFilter !== "ALL") {
@@ -505,7 +663,7 @@ export function applyLiveFilters(card) {
       return;
     }
     const levelFilter = card._liveLevelFilter.value;
-    const loggerFilter = card._liveLoggerFilter.value;
+    const loggerFilter = card._loggerFilterSelected;
     card._livePreview.querySelectorAll(".log-preview-line").forEach(el => {
       el.style.display = entryMatchesFilter(card, 
         { logger: el.dataset.logger, level: el.dataset.level },
@@ -521,7 +679,7 @@ export function togglePauseLive(card) {
     card._livePaused = !card._livePaused;
     card._livePauseBtn.textContent = card._livePaused ? "Resume" : "Pause";
     card._livePauseBtn.classList.toggle("paused", card._livePaused);
-    card._livePauseBtn.title = card._livePaused ? "View paused — click to resume" : "Pause viewer update";
+    card._livePauseBtn.title = card._livePaused ? "Paused; click to resume." : "Pause viewer update";
     if (card._recordingState === "recording") {
       card._liveStatusText.textContent = card._livePaused ? "Recording · view paused" : "Recording";
     }
@@ -540,12 +698,11 @@ export function togglePauseLive(card) {
 export function updateLiveSummary(card) {
     const seen = card._recordingBuffer.length;
     const hidden = Math.max(0, card._recordingBackendCount - seen);
-    const bufferPct = Math.round((seen / 10000) * 100);
     const recordingCount = card._recordingLoggers.length;
     const withEntries = new Set(card._recordingBuffer.map(entry => loggers.managedRoot(card, entry.logger))).size;
     const seenText = `${seen} entr${seen === 1 ? "y" : "ies"}${hidden > 0 ? ` (${hidden} hidden)` : ""}`;
     card._liveSummary.textContent =
-      `${seenText} \u00B7 buffer at ${bufferPct}% \u00B7 ` +
+      `${seenText} \u00B7 ` +
       `${recordingCount} logger${recordingCount === 1 ? "" : "s"} recording \u00B7 ` +
       `${withEntries} with entr${withEntries === 1 ? "y" : "ies"}`;
     results.updateExportButtonState(card);
@@ -562,13 +719,59 @@ export function attachLiveView(card) {
   const closeLive = () => results.closeLiveView(card);
   card._liveCloseBtn.addEventListener("click", closeLive);
   card._recordingLiveDialog.addEventListener("click", (e) => {
-    if (e.target === card._recordingLiveDialog) closeLive();
+    if (e.target === card._recordingLiveDialog) {
+      closeLive();
+      return;
+    }
+    // A click outside the entry table clears any explicit selection, unless it
+    // landed on a control that does not change which logs are seen: the entry
+    // table, the export actions, the top bar (Pause/Stop), the grouping row,
+    // the filter bar/picker, or any interactive control. Filter changes may
+    // re-derive the selection themselves; the clearing click is not the place.
+    const target = e.target;
+    if (!target || !target.closest) return;
+    if (target.closest(".log-preview")) return;
+    if (target.closest("#live-export-actions")) return;
+    if (target.closest("#live-top-bar")) return;
+    if (target.closest(".dedup-row")) return;
+    if (target.closest("#live-filter-bar")) return;
+    if (target.closest(".logger-filter")) return;
+    if (target.closest("button, input, select, textarea, label")) return;
+    if (card._selectedKeys && card._selectedKeys.size > 0) {
+      selection.clearSelection(card, card._livePreview);
+    }
   });
 
   card._livePauseBtn.addEventListener("click", () => togglePauseLive(card));
 
-  card._liveLoggerFilter.addEventListener("change", () => applyLiveFilters(card));
-  card._liveLevelFilter.addEventListener("change", () => applyLiveFilters(card));
+  // The logger filter is now a searchable checkbox multi-select. The button
+  // toggles the panel; the search box filters visible rows; checkbox changes
+  // repaint the list.
+  if (card._loggerFilterBtn) {
+    card._loggerFilterBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleLoggerFilter(card);
+    });
+  }
+  if (card._loggerFilterSearch) {
+    card._loggerFilterSearch.addEventListener("input", () => {
+      renderLoggerFilterCheckboxes(card);
+    });
+  }
+  // A click outside the picker closes it without touching the selection.
+  card._recordingLiveDialog.addEventListener("click", (e) => {
+    if (!card._loggerFilterOpen) return;
+    if (e.target.closest && e.target.closest(".logger-filter")) return;
+    closeLoggerFilter(card);
+  });
+
+  card._liveLevelFilter.addEventListener("change", () => {
+    // Keep the closed control's colour in step with the new selection.
+    ui.tintLevelOptions(card._liveLevelFilter);
+    applyLiveFilters(card);
+  });
+  // Colour every level-filter option, not just the selected value.
+  ui.tintLevelOptions(card._liveLevelFilter);
 
   // Clicking empty space or the header clears any text selection.
   card._livePreview.addEventListener("click", (e) => {
@@ -577,16 +780,38 @@ export function attachLiveView(card) {
       if (sel) sel.removeAllRanges();
     }
   });
+
+  // Wheel anywhere over the recording window scrolls the entry list, but only
+  // while that list actually overflows; otherwise let the page scroll normally.
+  card._recordingLiveDialog.addEventListener("wheel", (e) => {
+    const list = card._livePreview;
+    if (!list) return;
+    if (e.target && e.target.closest && e.target.closest(".log-preview, .logger-filter")) return;
+    const canScroll = list.scrollHeight > list.clientHeight + 1;
+    if (!canScroll) return;
+    e.preventDefault();
+    list.scrollTop += e.deltaY;
+  }, { passive: false });
 }
 
 // Mutable API object: the cross-concern call seam and the test stub target.
 export const liveView = {
   cleanupLivePolling,
   openLiveView,
+  accumulateLoggerFilterNames,
+  loggerFilterNames,
+  loggerFilterLabel,
+  renderLoggerFilterCheckboxes,
+  updateLoggerFilterButton,
+  openLoggerFilter,
+  closeLoggerFilter,
+  refreshLoggerFilterIfGrown,
+  toggleLoggerFilter,
   pollRecordingEntries,
   updateLiveTimer,
   groupConsecutiveDedup,
   isDedupEnabled,
+  dedupIdRangeText,
   dedupRowInnerHtml,
   dedupItemsInnerHtml,
   wireDedupToggle,
@@ -608,5 +833,6 @@ export const liveView = {
   togglePauseLive,
   updateLiveSummary,
   attachLiveView,
+  DEDUP_GROUP_TITLE,
 };
 registerConcern("liveView", liveView);

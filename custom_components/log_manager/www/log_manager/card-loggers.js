@@ -1,5 +1,6 @@
 import { concern, registerConcern } from "./card-core.js";
 import { utils } from "./card-utils.js";
+import { ui } from "./card-ui.js";
 
 // Late-bound cross-module seam: `card-core.js` holds the registry, so this
 // module has no static import of its callers.
@@ -15,6 +16,16 @@ const selection = concern("selection");
 // panel shows newest AUDIT_SHOW.
 const AUDIT_KEEP = 5;
 const AUDIT_SHOW = 3;
+
+// Why a core-pinned logger's level cannot be changed from the card. Exposed on
+// the `loggers` API object so the add/edit rows use one shared string.
+export const PINNED_REASON = "Managed by Home Assistant; not editable from the card.";
+
+// Shared counter-badge tooltip, so the wording is defined once for the initial
+// render and the in-place update path.
+function counterBadgeTitle(label) {
+  return label === "warning" ? "View captured warnings" : "View captured errors";
+}
 
 // Show a styled delete confirmation dialog instead of browser confirm().
 // Used by every concern that needs a destructive-action prompt; the dialog
@@ -55,11 +66,11 @@ export function renderCounterBadgeHtml(card, loggerName) {
 
     let html = "";
     if (warningCount > 0) {
-      const title = `${warningCount} warning${warningCount !== 1 ? "s" : ""} — click to expand`;
+      const title = counterBadgeTitle("warning");
       html += `<span class="counter-badge warning-badge" title="${utils.escapeAttr(title)}" data-logger="${utils.escapeAttr(loggerName)}">&#9888; ${warningCount}</span>`;
     }
     if (errorCount > 0) {
-      const title = `${errorCount} error${errorCount !== 1 ? "s" : ""} — click to expand`;
+      const title = counterBadgeTitle("error");
       html += `<span class="counter-badge error-badge" title="${utils.escapeAttr(title)}" data-logger="${utils.escapeAttr(loggerName)}">&#10005; ${errorCount}</span>`;
     }
     return html;
@@ -126,7 +137,8 @@ export function updateRaisedChipInPlace(card, pathDiv, html) {
     const fresh = document.createElement("div");
     fresh.innerHTML = html;
     const freshLine = fresh.firstChild;
-    existing.textContent = freshLine.textContent;
+    // innerHTML preserves the severity-coloured level span inside the chip.
+    existing.innerHTML = freshLine.innerHTML;
     existing.setAttribute("title", freshLine.getAttribute("title") || "");
   }
 
@@ -369,7 +381,7 @@ export function renderLogPanelHtml(card, loggerName) {
     const hasEntries = recentLogs.length > 0;
     let entriesHtml = "";
     if (recentLogs.length === 0) {
-      entriesHtml = `<div class="log-entry-empty">No recent log entries.</div>`;
+      entriesHtml = `<div class="log-entry-empty">No recent warning+ entries.</div>`;
     } else {
       const levelChips = {
         "CRITICAL": ["C", "log-level-error"],
@@ -379,13 +391,13 @@ export function renderLogPanelHtml(card, loggerName) {
         "DEBUG": ["D", "log-level-debug"],
       };
       recentLogs.forEach((entry, index) => {
-        const time = new Date(entry.timestamp * 1000).toLocaleTimeString(card._locale(), { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+        const time = utils.formatClockTime(entry.timestamp, card._hass);
         const chip = levelChips[entry.level] || [entry.level.charAt(0), "log-level-debug"];
         const colors = utils.levelColors(entry.level);
         const msg = utils.escapeHtml(entry.message);
         const src = entry.source ? utils.escapeHtml(entry.source.split("/").pop()) : "";
         entriesHtml += `
-          <div class="log-entry selectable-entry" data-entry-index="${index}" data-sel-keys="${utils.escapeAttr(JSON.stringify([selection.entryKey(card, entry)]))}" draggable="false" style="background: ${colors.rowBg}; border-left: 2px solid ${colors.color};" title="Click to select; Ctrl/Cmd-click to add to the selection">
+          <div class="log-entry selectable-entry" data-entry-index="${index}" data-sel-keys="${utils.escapeAttr(JSON.stringify([selection.entryKey(card, entry)]))}" draggable="false" style="background: ${colors.rowBg}; border-left: 2px solid ${colors.color};">
             <span class="log-time">${time}</span>
             <span class="log-level ${chip[1]}">${chip[0]}</span>
             <span class="log-msg">${msg}</span>
@@ -414,23 +426,28 @@ export function renderLogPanelHtml(card, loggerName) {
     const thresholdHidden = alertDisabled ? ' style="display: none;"' : "";
 
     // The counting floor is fixed at WARNING; explain only when the logger's
-    // own level is numerically stricter, since then its events never reach the
-    // counters. Hidden when the effective level is unknown.
+    // own level is numerically stricter, since then its events never alert.
+    // Hidden when the effective level is unknown.
     const gateLevel = effectiveGateLevel(card, loggerName);
-    const gateIdx = gateLevel ? utils.levelIndex(gateLevel) : -1;
-    const gateStricter = gateIdx > utils.levelIndex("WARNING");
+    const gateSeverity = gateLevel ? utils.entrySeverity(gateLevel) : -1;
+    const gateStricter = gateSeverity > utils.entrySeverity("WARNING");
     const gateColor = gateStricter ? utils.levelColors(gateLevel).color : "";
     const countWarningHtml = gateStricter
-      ? `<div class="count-warning" title="The logger's own level discards these events before the counter handler runs.">This logger is set to <span style="color: ${gateColor}; font-weight: 600;">${utils.escapeHtml(gateLevel)}</span>, so events below it never reach the counters.</div>`
+      ? `<div class="count-warning">This logger is set to <span style="color: ${gateColor}; font-weight: 600;">${utils.escapeHtml(gateLevel)}</span>, so events below it never alert.</div>`
       : "";
+
+    // Static explanation of what the panel shows. "WARNINGs" is tinted with the
+    // warning severity colour. Independent of the logger's own level.
+    const warnColor = utils.levelColors("WARNING").color;
+    const disclaimerHtml = `<div class="log-disclaimer">This panel shows recent <span style="color: ${warnColor}; font-weight: 600;">WARNINGs</span> and above, separately from any recording.</div>`;
 
     return `
       <div class="log-panel">
         <div class="panel-controls-row">
-          <label class="alert-row" title="Notify once when this many events at or above the chosen severity have been counted since the last reset. Choose DISABLED to turn the alert off; resetting the counters re-arms it.">
+          <label class="alert-row" title="Notify after this many events at the chosen level or above. DISABLED turns it off.">
             Alert:
             <select class="alert-level-select" data-logger="${utils.escapeAttr(loggerName)}" style="color: ${alertColors.color}; border-color: ${alertColors.color};"${alertInfo.unavailable ? " disabled" : ""}>${alertOptions}</select>
-            <span>&ge;</span>
+            ${alertDisabled ? "" : "<span>&ge;</span>"}
             <input class="alert-threshold-input" type="number" min="1" max="100000" step="1" value="${thresholdValue}" data-logger="${utils.escapeAttr(loggerName)}"${thresholdHidden}${alertInfo.unavailable ? " disabled" : ""}>
           </label>
           <button type="button" class="icon-btn history-btn" data-logger="${utils.escapeAttr(loggerName)}" title="${utils.escapeAttr(auditHistory ? `Show level-change history\n\n${auditHistory}` : "Show level-change history")}">
@@ -439,14 +456,14 @@ export function renderLogPanelHtml(card, loggerName) {
         </div>
         ${countWarningHtml}
         <div class="log-entries">${entriesHtml}</div>
-        ${hasEntries ? `<div class="selection-hint" title="Plain click selects one entry; Ctrl/Cmd-click or drag extends the selection.">Click to select &middot; Ctrl/Cmd-click or drag to select more</div>` : ""}
-        <div class="log-disclaimer" title="This panel is fed by the counter badges, which capture events at WARNING and above once they reach the logger's own level. It does not affect or reflect recording.">This panel shows WARNING and above; events below the logger's own level never reach the counters.</div>
+        ${hasEntries ? `<div class="selection-hint">Click to select &middot; Ctrl/Cmd-click or drag to select more</div>` : ""}
+        ${disclaimerHtml}
         ${hasEntries ? `<div style="display: flex; gap: 8px; margin-top: 8px;">
-          <button class="reset-btn" data-logger="${utils.escapeAttr(loggerName)}" title="Clears this logger's captured entries and counts, and re-arms its alert.">
+          <button class="reset-btn" data-logger="${utils.escapeAttr(loggerName)}" title="Clear captured entries and counts.">
             <ha-icon icon="mdi:refresh" style="--mdi-icon-size: 14px;"></ha-icon>
             Clear
           </button>
-          <button class="copy-panel-btn" data-logger="${utils.escapeAttr(loggerName)}" title="Copy the selected entries, or all captured entries when none are selected">
+          <button class="copy-panel-btn" data-logger="${utils.escapeAttr(loggerName)}" title="Copy selected entries, or all captured entries.">
             <ha-icon icon="mdi:content-copy" style="--mdi-icon-size: 14px;"></ha-icon>
             Copy
           </button>
@@ -482,7 +499,8 @@ export function attachResetHandler(card, row) {
       if (card._counters[loggerName]) {
         card._counters[loggerName] = {"warning": 0, "error": 0, "last_warning": "", "last_error": "", "recent_logs": [], "levels": {}};
       }
-      addForm.updateActiveList(card);
+      // Force the panel rebuild even while the Clear button still holds focus.
+      addForm.refreshAfterCommit(card, loggerName);
     });
   }
 
@@ -512,6 +530,8 @@ export function attachAlertHandler(card, row) {
     const sel = row.querySelector(".alert-level-select");
     const num = row.querySelector(".alert-threshold-input");
     if (sel) {
+      // Colour every option, not just the selected DISABLED/severity value.
+      ui.tintLevelOptions(sel);
       sel.addEventListener("change", send);
       sel.addEventListener("click", (e) => e.stopPropagation());
     }
@@ -550,7 +570,7 @@ export function updateBadgesInPlace(card, row, loggerName) {
 
     const upsertBadge = (cls, count, icon, label) => {
       if (count > 0) {
-        const title = `${count} ${label}${count !== 1 ? "s" : ""} — click to expand`;
+        const title = counterBadgeTitle(label);
         let badge = badgesContainer ? badgesContainer.querySelector(`.${cls}`) : null;
         if (badge) {
           // Update existing badge in-place — DOM stays alive, tooltip survives.
@@ -608,13 +628,18 @@ export function renderRaisedChipHtml(card, loggerName, isRecording) {
     const restore = (card._recordingRestoreLevels || {})[loggerName];
     if (!restore || !restore.raisedTo) return "";
     const title = `Restored to ${restore.level} when the recording ends`;
-    return `<div class="raised-line" title="${utils.escapeAttr(title)}">Raised to ${utils.escapeHtml(restore.raisedTo)}</div>`;
+    const colors = utils.levelColors(restore.raisedTo);
+    return `<div class="raised-line" title="${utils.escapeAttr(title)}">\u2191 Raised to <span style="color: ${colors.color}; font-weight: 600;">${utils.escapeHtml(restore.raisedTo)}</span></div>`;
   }
 
 export function levelSourceLabel(card, loggerName, level) {
     const entries = getAuditEntries(card, loggerName);
     const match = entries.find(a => a.new_level === level);
-    if (match) return auditSourceLabel(card, match.source);
+    if (match) {
+      // The card's own change is not restated: omit the "UI" attribution.
+      const label = auditSourceLabel(card, match.source);
+      return label === "UI" ? "" : label;
+    }
     if (level === "NOTSET") return "inherited";
     return "";
   }
@@ -622,10 +647,10 @@ export function levelSourceLabel(card, loggerName, level) {
 export function levelSelectTooltip(card, loggerName, currentLevel, isPinned, isRecording) {
     const parts = [];
     if (isPinned) {
-      parts.push("Managed by Home Assistant — set via YAML logger:, the integration's debug toggle, or the logger.set_level service.");
+      parts.push(PINNED_REASON);
     }
     if (isRecording) {
-      parts.push("Level is locked while this logger is recording. Stop the recording to change it.");
+      parts.push("Locked while recording; stop to change it.");
     }
     if (currentLevel) {
       const source = levelSourceLabel(card, loggerName, currentLevel);
@@ -718,5 +743,6 @@ export const loggers = {
   loggerDisplay,
   loggerCellHtml,
   managedRoot,
+  PINNED_REASON,
 };
 registerConcern("loggers", loggers);

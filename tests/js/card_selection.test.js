@@ -26,7 +26,7 @@ describe("card-selection", () => {
       document.body.appendChild(container);
       rec._livePreview = container;
       rec._liveLevelFilter = { value: "ALL" };
-      rec._liveLoggerFilter = { value: "" };
+      rec._loggerFilterSelected = new Set();
       rec._recordingBuffer = mkBuf();
       // Flat rows keep the row order deterministic for range checks.
       rec._liveDedupOverride = false;
@@ -44,6 +44,15 @@ describe("card-selection", () => {
       selection.handleSelectionClick(rec, container, rows()[0], {});
       expect(rows()[0].classList.contains("selected")).toBe(true);
       expect(rows()[1].classList.contains("selected")).toBe(false);
+    });
+
+    test("a plain re-click on the sole selected row clears the selection", () => {
+      selection.handleSelectionClick(rec, container, rows()[0], {});
+      expect(rows()[0].classList.contains("selected")).toBe(true);
+
+      selection.handleSelectionClick(rec, container, rows()[0], {});
+      expect(rows()[0].classList.contains("selected")).toBe(false);
+      expect(rec._selectedKeys.size).toBe(0);
     });
 
     test("ctrl-click adds and removes rows", () => {
@@ -92,6 +101,57 @@ describe("card-selection", () => {
       } finally {
         navigator.clipboard = undefined;
       }
+    });
+  });
+
+  describe("dialog controls do not clear the selection (item 7)", () => {
+    const buildDialogCard = () => {
+      const rec = document.createElement("log-manager-card");
+      const dialog = document.createElement("div");
+      dialog.id = "recording-live-dialog";
+      const topBar = document.createElement("div");
+      topBar.id = "live-top-bar";
+      const pause = document.createElement("button");
+      topBar.appendChild(pause);
+      const dedupRow = document.createElement("label");
+      dedupRow.className = "dedup-row";
+      const toggle = document.createElement("input");
+      dedupRow.appendChild(toggle);
+      const preview = document.createElement("div");
+      preview.className = "log-preview";
+      dialog.append(topBar, dedupRow, preview);
+      rec._recordingLiveDialog = dialog;
+      rec._livePreview = preview;
+      rec._liveBtn = document.createElement("button");
+      rec._liveCloseBtn = document.createElement("button");
+      rec._livePauseBtn = document.createElement("button");
+      rec._liveLevelFilter = document.createElement("select");
+      rec._loggerFilterOpen = false;
+      rec._selectedKeys = new Set(["k1"]);
+      rec._hass = { states: {}, connection: { sendMessagePromise: jest.fn() } };
+      return { rec, dialog, pause, toggle };
+    };
+
+    test("clicking Pause or the grouping toggle leaves the selection intact", () => {
+      const { rec, pause, toggle } = buildDialogCard();
+      liveView.attachLiveView(rec);
+
+      pause.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      expect(rec._selectedKeys.size).toBe(1);
+
+      toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      expect(rec._selectedKeys.size).toBe(1);
+    });
+
+    test("clicking the dialog body still clears the selection", () => {
+      const { rec, dialog } = buildDialogCard();
+      liveView.attachLiveView(rec);
+
+      // A plain area of the dialog that is not a control or the table.
+      const body = document.createElement("div");
+      dialog.appendChild(body);
+      body.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      expect(rec._selectedKeys.size).toBe(0);
     });
   });
 });
